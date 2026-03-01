@@ -70,6 +70,17 @@ export default function Header() {
           >
             About
           </Link>
+          <Link
+            to="/media"
+            className="nav-link"
+            activeProps={{ className: 'nav-link is-active' }}
+            activeOptions={{ exact: false }}
+          >
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--lagoon)]" />
+              Media
+            </span>
+          </Link>
           <a
             href="https://tanstack.com/start/latest/docs/framework/react/overview"
             className="nav-link"
