@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Media Playground favicon">
+  <defs>
+    <linearGradient id="mp-g" x1="12" y1="12" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1CE8B5" />
+      <stop offset="1" stop-color="#5B8CFF" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#0B0C11" />
+  <rect x="6.5" y="6.5" width="51" height="51" rx="11.5" fill="none" stroke="url(#mp-g)" stroke-width="3" />
+  <path d="M15 47V17h11l6 10 6-10h11v30h-8V30l-9 14-9-14v17z" fill="url(#mp-g)" />
+  <circle cx="49" cy="15" r="4" fill="#FBBF24" />
+</svg>

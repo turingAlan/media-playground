@@ -2,7 +2,12 @@ import { useCallback, useRef, useState } from 'react'
 
 type DropZoneProps = {
   accept: string[]
-  onFile: (file: File) => void
+  /** Called with the first accepted file (single-file mode) */
+  onFile?: (file: File) => void
+  /** Called with all accepted files (multi-file mode) */
+  onFiles?: (files: File[]) => void
+  /** Allow selecting/dropping multiple files at once */
+  multiple?: boolean
   label?: string
   sublabel?: string
   className?: string
@@ -11,6 +16,8 @@ type DropZoneProps = {
 export default function DropZone({
   accept,
   onFile,
+  onFiles,
+  multiple = false,
   label = 'Drop a file here',
   sublabel,
   className = '',
@@ -18,24 +25,36 @@ export default function DropZone({
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const isAccepted = (f: File) =>
+    accept.some((a) => f.type.startsWith(a.replace('/*', '')) || f.name.endsWith(a.replace('*.', '.')))
+
+  const emit = useCallback(
+    (raw: File[]) => {
+      const files = raw.filter(isAccepted)
+      if (files.length === 0) return
+      if (onFiles) onFiles(files)
+      else if (onFile) onFile(files[0])
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [accept, onFile, onFiles],
+  )
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
       setDragging(false)
-      const f = e.dataTransfer.files[0]
-      if (f && accept.some((a) => f.type.startsWith(a.replace('/*', '')) || f.name.endsWith(a.replace('*.', '.')))) {
-        onFile(f)
-      }
+      emit(Array.from(e.dataTransfer.files))
     },
-    [accept, onFile],
+    [emit],
   )
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const f = e.target.files?.[0]
-      if (f) onFile(f)
+      emit(Array.from(e.target.files ?? []))
+      // reset so same file can be re-selected
+      e.target.value = ''
     },
-    [onFile],
+    [emit],
   )
 
   return (
@@ -65,13 +84,14 @@ export default function DropZone({
       </div>
 
       <p style={{ fontSize: '11px', color: 'var(--mz-text-2)' }}>
-        or click to browse
+        {multiple ? 'or click to browse · multiple files ok' : 'or click to browse'}
       </p>
 
       <input
         ref={inputRef}
         type="file"
         accept={accept.join(',')}
+        multiple={multiple}
         className="sr-only"
         onChange={handleChange}
         tabIndex={-1}

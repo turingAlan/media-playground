@@ -1,5 +1,17 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+// ─── Grip icon (3 vertical lines) ────────────────────────────────────────────
+function GripLines() {
+  return (
+    <div style={{ display: 'flex', gap: 2, alignItems: 'center', justifyContent: 'center' }}>
+      {[0,1,2].map((i) => (
+        <div key={i} style={{ width: 1.5, height: 10, borderRadius: 1, background: 'rgba(0,0,0,0.45)' }} />
+      ))}
+    </div>
+  )
+}
+
 import DropZone from '#/components/media/DropZone'
 import {
   formatBytes,
@@ -15,6 +27,22 @@ type VideoResult = {
   url: string
   format: VideoFormat
   ext: string
+}
+
+type VideoFileEntry = {
+  id: string
+  file: File
+  fileUrl: string
+  poster: string | null
+  videoError: boolean
+  videoDuration: number
+  trimEnabled: boolean
+  trimStart: number
+  trimEnd: number
+  results: VideoResult[]
+  errors: Partial<Record<VideoFormat, string>>
+  formatProgress: Partial<Record<VideoFormat, number>>
+  processing: boolean
 }
 
 function Section({ title, badge, children }: { title: string; badge?: string; children: React.ReactNode }) {
@@ -35,18 +63,22 @@ function fmtTime(s: number): string {
   return m > 0 ? `${m}:${sec.padStart(4, '0')}` : `${sec}s`
 }
 
-function TrimBar({
-  duration, start, end, onStartChange, onEndChange, videoRef,
+function VideoTrimTimeline({
+  duration, start, end, currentTime,
+  onStartChange, onEndChange, onSeek,
 }: {
   duration: number
   start: number
   end: number
+  currentTime: number
   onStartChange: (v: number) => void
   onEndChange:   (v: number) => void
-  videoRef?: React.RefObject<HTMLVideoElement>
+  onSeek: (t: number) => void
 }) {
   const trackRef = useRef<HTMLDivElement>(null)
-  const MIN_GAP  = Math.max(0.25, duration * 0.005)
+  const [dragTip, setDragTip] = useState<{ which: 'start' | 'end' | 'seek'; time: number } | null>(null)
+  const [hovered, setHovered] = useState<'start' | 'end' | null>(null)
+  const MIN_GAP  = Math.max(0.5, duration * 0.005)
 
   function posToSec(clientX: number) {
     if (!trackRef.current) return 0
@@ -54,21 +86,29 @@ function TrimBar({
     return Math.max(0, Math.min(duration, ((clientX - rect.left) / rect.width) * duration))
   }
 
-  function startDrag(which: 'start' | 'end') {
+  function makeDrag(which: 'start' | 'end' | 'seek') {
     return (e: React.MouseEvent | React.TouchEvent) => {
       e.preventDefault()
-      const move = (ev: MouseEvent | TouchEvent) => {
-        const x   = 'touches' in ev ? ev.touches[0].clientX : ev.clientX
-        const sec = posToSec(x)
+      e.stopPropagation()
+      const apply = (clientX: number) => {
+        const sec = posToSec(clientX)
+        let clamped = sec
         if (which === 'start') {
-          const v = Math.max(0, Math.min(sec, end - MIN_GAP))
-          onStartChange(v)
-          if (videoRef?.current) videoRef.current.currentTime = v
+          clamped = Math.max(0, Math.min(sec, end - MIN_GAP))
+          onStartChange(clamped)
+        } else if (which === 'end') {
+          clamped = Math.min(duration, Math.max(sec, start + MIN_GAP))
+          onEndChange(clamped)
         } else {
-          onEndChange(Math.min(duration, Math.max(sec, start + MIN_GAP)))
+          onSeek(sec)
         }
+        setDragTip({ which, time: clamped })
       }
+      apply('touches' in e ? e.touches[0].clientX : e.clientX)
+      const move = (ev: MouseEvent | TouchEvent) =>
+        apply('touches' in ev ? ev.touches[0].clientX : ev.clientX)
       const up = () => {
+        setDragTip(null)
         window.removeEventListener('mousemove', move)
         window.removeEventListener('mouseup',   up)
         window.removeEventListener('touchmove', move as EventListener)
@@ -81,55 +121,260 @@ function TrimBar({
     }
   }
 
-  const s = (start / duration) * 100
-  const e = (end   / duration) * 100
+  const s  = (start       / duration) * 100
+  const e  = (end         / duration) * 100
+  const ct = (currentTime / duration) * 100
 
-  const handleStyle: React.CSSProperties = {
-    position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)',
-    width: 13, height: 24, borderRadius: 3,
-    background: 'var(--mz-amber)', cursor: 'ew-resize',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 1px 5px rgba(0,0,0,0.45)',
-    zIndex: 2,
-  }
+  // ── Tick marks ─────────────────────────────────────────────────────────────
+  // Pick a sensible interval (every 1s, 5s, 10s, 30s, 60s …)
+  const tickIntervals = [1, 2, 5, 10, 15, 30, 60, 120, 300]
+  const maxTicks = 12
+  const tickInterval = tickIntervals.find((t) => duration / t <= maxTicks) ?? 300
+  const ticks: number[] = []
+  for (let t = tickInterval; t < duration; t += tickInterval) ticks.push(t)
+
+  const TRACK_H  = 40
+  const HANDLE_W = 16
+  const OVERHANG = 6
 
   return (
-    <div ref={trackRef} style={{ position: 'relative', height: 32, userSelect: 'none' }}>
-      {/* Base track */}
+    <div style={{ userSelect: 'none' }}>
+      {/* ── Main scrubber ──────────────────────────────────────── */}
+      <div style={{ position: 'relative', paddingLeft: HANDLE_W, paddingRight: HANDLE_W }}>
+        {/* Click-to-seek outer container */}
+        <div
+          ref={trackRef}
+          onMouseDown={makeDrag('seek')}
+          onTouchStart={makeDrag('seek')}
+          style={{
+            position: 'relative',
+            height: TRACK_H + OVERHANG * 2,
+            cursor: 'crosshair',
+          }}
+        >
+          {/* ── Track body ─────────────────────────────────────── */}
+          <div style={{
+            position: 'absolute',
+            top: OVERHANG, left: 0, right: 0, height: TRACK_H,
+            borderRadius: 5,
+            overflow: 'hidden',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.08)',
+          }}>
+            {/* Left cut zone — hatched */}
+            <div style={{
+              position: 'absolute', top: 0, left: 0, width: `${s}%`, height: '100%',
+              background: 'rgba(0,0,0,0.55)',
+              backgroundImage: 'repeating-linear-gradient(135deg, transparent, transparent 6px, rgba(255,255,255,0.03) 6px, rgba(255,255,255,0.03) 12px)',
+            }} />
+            {/* Keep zone fill */}
+            <div style={{
+              position: 'absolute', top: 0, left: `${s}%`, width: `${e - s}%`, height: '100%',
+              background: 'rgba(251,191,36,0.12)',
+            }} />
+            {/* Right cut zone — hatched */}
+            <div style={{
+              position: 'absolute', top: 0, left: `${e}%`, right: 0, height: '100%',
+              background: 'rgba(0,0,0,0.55)',
+              backgroundImage: 'repeating-linear-gradient(135deg, transparent, transparent 6px, rgba(255,255,255,0.03) 6px, rgba(255,255,255,0.03) 12px)',
+            }} />
+            {/* Tick marks */}
+            {ticks.map((t) => (
+              <div key={t} style={{
+                position: 'absolute', top: 0,
+                left: `${(t / duration) * 100}%`,
+                width: 1, height: '100%',
+                background: 'rgba(255,255,255,0.08)',
+                pointerEvents: 'none',
+              }} />
+            ))}
+            {/* Playhead line */}
+            <div style={{
+              position: 'absolute', top: 0,
+              left: `${ct}%`,
+              transform: 'translateX(-50%)',
+              width: 2, height: '100%',
+              background: 'rgba(255,255,255,0.92)',
+              boxShadow: '0 0 6px rgba(255,255,255,0.4)',
+              pointerEvents: 'none',
+              zIndex: 4,
+            }} />
+          </div>
+
+          {/* ── Amber top+bottom rails for keep zone ───────────── */}
+          <div style={{
+            position: 'absolute',
+            top: OVERHANG, left: `${s}%`, width: `${e - s}%`, height: TRACK_H,
+            borderTop: '2px solid var(--mz-amber)',
+            borderBottom: '2px solid var(--mz-amber)',
+            pointerEvents: 'none',
+            zIndex: 2,
+            boxSizing: 'border-box',
+          }} />
+
+          {/* ── Playhead head (circle) ─────────────────────────── */}
+          <div style={{
+            position: 'absolute',
+            top: OVERHANG - 5,
+            left: `${ct}%`,
+            transform: 'translateX(-50%)',
+            width: 10, height: 10, borderRadius: '50%',
+            background: '#fff',
+            border: '2px solid rgba(255,255,255,0.6)',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.6)',
+            pointerEvents: 'none',
+            zIndex: 5,
+          }} />
+
+          {/* Current time badge — only when dragging seek */}
+          {dragTip?.which === 'seek' && (
+            <div style={{
+              position: 'absolute',
+              bottom: OVERHANG + TRACK_H + 4,
+              left: `${ct}%`,
+              transform: 'translateX(-50%)',
+              background: 'rgba(0,0,0,0.85)',
+              color: '#fff',
+              fontSize: 10,
+              fontFamily: 'monospace',
+              padding: '2px 6px',
+              borderRadius: 4,
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+              zIndex: 8,
+            }}>
+              {fmtTime(currentTime)}
+            </div>
+          )}
+
+          {/* ── Start handle ───────────────────────────────────── */}
+          <button
+            type="button" aria-label="Trim start"
+            onMouseDown={makeDrag('start')}
+            onTouchStart={makeDrag('start')}
+            onMouseEnter={() => setHovered('start')}
+            onMouseLeave={() => setHovered(null)}
+            style={{
+              position: 'absolute',
+              top: OVERHANG,
+              left: `${s}%`,
+              transform: 'translateX(-100%)',
+              width: HANDLE_W, height: TRACK_H,
+              borderRadius: '5px 0 0 5px',
+              background: hovered === 'start' || dragTip?.which === 'start'
+                ? '#fcd34d'
+                : 'var(--mz-amber)',
+              cursor: 'col-resize', zIndex: 6,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: 'none', padding: 0,
+              boxShadow: '-3px 0 10px rgba(0,0,0,0.5)',
+              transition: 'background 0.1s',
+            }}
+          >
+            <GripLines />
+            {/* Live time tooltip */}
+            {(dragTip?.which === 'start' || hovered === 'start') && (
+              <div style={{
+                position: 'absolute', bottom: '100%', left: '50%',
+                transform: 'translateX(-50%)',
+                marginBottom: 5,
+                background: 'var(--mz-amber)',
+                color: 'rgba(0,0,0,0.8)',
+                fontSize: 10, fontFamily: 'monospace', fontWeight: 700,
+                padding: '2px 7px', borderRadius: 4,
+                whiteSpace: 'nowrap',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+              }}>
+                {fmtTime(dragTip?.which === 'start' ? dragTip.time : start)}
+              </div>
+            )}
+          </button>
+
+          {/* ── End handle ─────────────────────────────────────── */}
+          <button
+            type="button" aria-label="Trim end"
+            onMouseDown={makeDrag('end')}
+            onTouchStart={makeDrag('end')}
+            onMouseEnter={() => setHovered('end')}
+            onMouseLeave={() => setHovered(null)}
+            style={{
+              position: 'absolute',
+              top: OVERHANG,
+              left: `${e}%`,
+              width: HANDLE_W, height: TRACK_H,
+              borderRadius: '0 5px 5px 0',
+              background: hovered === 'end' || dragTip?.which === 'end'
+                ? '#fcd34d'
+                : 'var(--mz-amber)',
+              cursor: 'col-resize', zIndex: 6,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: 'none', padding: 0,
+              boxShadow: '3px 0 10px rgba(0,0,0,0.5)',
+              transition: 'background 0.1s',
+            }}
+          >
+            <GripLines />
+            {/* Live time tooltip */}
+            {(dragTip?.which === 'end' || hovered === 'end') && (
+              <div style={{
+                position: 'absolute', bottom: '100%', left: '50%',
+                transform: 'translateX(-50%)',
+                marginBottom: 5,
+                background: 'var(--mz-amber)',
+                color: 'rgba(0,0,0,0.8)',
+                fontSize: 10, fontFamily: 'monospace', fontWeight: 700,
+                padding: '2px 7px', borderRadius: 4,
+                whiteSpace: 'nowrap',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+              }}>
+                {fmtTime(dragTip?.which === 'end' ? dragTip.time : end)}
+              </div>
+            )}
+          </button>
+        </div>
+
+        {/* ── Tick labels ────────────────────────────────────── */}
+        <div style={{ position: 'relative', height: 14, marginTop: 2 }}>
+          {/* Total duration at far right */}
+          <span style={{
+            position: 'absolute', right: 0,
+            fontSize: 9, fontFamily: 'monospace', color: 'rgba(255,255,255,0.25)',
+            whiteSpace: 'nowrap',
+          }}>{fmtTime(duration)}</span>
+          {/* 0 at far left */}
+          <span style={{
+            position: 'absolute', left: 0,
+            fontSize: 9, fontFamily: 'monospace', color: 'rgba(255,255,255,0.25)',
+          }}>0</span>
+          {ticks.map((t) => (
+            <span key={t} style={{
+              position: 'absolute', left: `${(t / duration) * 100}%`,
+              transform: 'translateX(-50%)',
+              fontSize: 9, fontFamily: 'monospace', color: 'rgba(255,255,255,0.2)',
+              whiteSpace: 'nowrap',
+            }}>{fmtTime(t)}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Summary bar ────────────────────────────────────────── */}
       <div style={{
-        position: 'absolute', top: '50%', left: 0, right: 0, height: 6,
-        transform: 'translateY(-50%)', background: 'var(--mz-surface-2)',
-        borderRadius: 3, border: '1px solid var(--mz-border)',
-      }} />
-      {/* Dimmed left (cut) */}
-      <div style={{
-        position: 'absolute', top: '50%', left: 0, width: `${s}%`, height: 6,
-        transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.3)', borderRadius: '3px 0 0 3px',
-      }} />
-      {/* Active range */}
-      <div style={{
-        position: 'absolute', top: '50%', left: `${s}%`, width: `${e - s}%`, height: 6,
-        transform: 'translateY(-50%)', background: 'var(--mz-amber)', opacity: 0.85,
-      }} />
-      {/* Dimmed right (cut) */}
-      <div style={{
-        position: 'absolute', top: '50%', left: `${e}%`, right: 0, height: 6,
-        transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.3)', borderRadius: '0 3px 3px 0',
-      }} />
-      {/* Start handle */}
-      <button
-        type="button" aria-label="Trim start"
-        style={{ ...handleStyle, left: `${s}%` }}
-        onMouseDown={startDrag('start')} onTouchStart={startDrag('start')}>
-        <div style={{ width: 2, height: 10, background: 'rgba(0,0,0,0.4)', borderRadius: 1 }} />
-      </button>
-      {/* End handle */}
-      <button
-        type="button" aria-label="Trim end"
-        style={{ ...handleStyle, left: `${e}%` }}
-        onMouseDown={startDrag('end')} onTouchStart={startDrag('end')}>
-        <div style={{ width: 2, height: 10, background: 'rgba(0,0,0,0.4)', borderRadius: 1 }} />
-      </button>
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 0 0',
+        fontSize: 10, fontFamily: 'monospace',
+      }}>
+        <span style={{ color: 'var(--mz-amber)', fontWeight: 600 }}>
+          {fmtTime(start)}
+        </span>
+        <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+        <span style={{ color: 'rgba(255,255,255,0.45)' }}>
+          {fmtTime(end - start)} selected
+        </span>
+        <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+        <span style={{ color: 'var(--mz-amber)', fontWeight: 600 }}>
+          {fmtTime(end)}
+        </span>
+      </div>
     </div>
   )
 }
@@ -161,9 +406,11 @@ const PRESETS  = ['ultrafast', 'fast', 'medium', 'slow', 'veryslow']
 const AUDIO_BITRATES = ['64k', '96k', '128k', '192k', '256k', '320k']
 
 function VideoStudio() {
-  const [file, setFile]       = useState<File | null>(null)
-  const [fileUrl, setFileUrl] = useState<string | null>(null)
+  // ── File queue ───────────────────────────────────────────────────────────
+  const [entries, setEntries] = useState<VideoFileEntry[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
 
+  // ── Global conversion settings ───────────────────────────────────────────
   const [selectedFormats, setSelectedFormats] = useState<VideoFormat[]>(['mp4'])
   const [crf, setCrf]                   = useState(23)
   const [removeAudio, setRemoveAudio]   = useState(false)
@@ -171,27 +418,26 @@ function VideoStudio() {
   const [scale, setScale]               = useState<string | null>(null)
   const [preset, setPreset]             = useState('medium')
 
+  // ── FFmpeg ───────────────────────────────────────────────────────────────
   const [ffmpegLoaded, setFfmpegLoaded]   = useState(false)
   const [ffmpegLoading, setFfmpegLoading] = useState(false)
   const [loadError, setLoadError]         = useState<string | null>(null)
-  const [processing, setProcessing]       = useState(false)
-  // per-format progress 0-100
-  const [formatProgress, setFormatProgress] = useState<Partial<Record<VideoFormat, number>>>({})
-  const [results, setResults]             = useState<VideoResult[]>([])
-  const [errors, setErrors]               = useState<Partial<Record<VideoFormat, string>>>({})
-  const [videoError, setVideoError]       = useState(false)
-  const [poster, setPoster]               = useState<string | null>(null)
 
-  // trim
-  const videoRef                            = useRef<HTMLVideoElement>(null)
-  const [videoDuration, setVideoDuration]   = useState(0)
-  const [trimEnabled, setTrimEnabled]       = useState(false)
-  const [trimStart, setTrimStart]           = useState(0)
-  const [trimEnd, setTrimEnd]               = useState(0)
+  // ── Refs ─────────────────────────────────────────────────────────────────
+  const videoRef       = useRef<HTMLVideoElement>(null)
+  const addMoreRef     = useRef<HTMLInputElement>(null)
+  // per-entry results map (avoids stale closures in parallel format processing)
+  const entryResultsRef = useRef<Map<string, VideoResult[]>>(new Map())
+  // timeline current time (active entry only)
+  const [currentTime, setCurrentTime] = useState(0)
 
-  // ref so parallel callbacks see latest results without stale closure
-  const resultsRef = useRef<VideoResult[]>([])
+  // ── Active entry ─────────────────────────────────────────────────────────
+  const activeEntry = useMemo(
+    () => entries.find((e) => e.id === activeId) ?? null,
+    [entries, activeId],
+  )
 
+  // ── FFmpeg load ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (ffmpegLoaded || ffmpegLoading) return
     setFfmpegLoading(true)
@@ -202,126 +448,191 @@ function VideoStudio() {
       .finally(() => setFfmpegLoading(false))
   }, [ffmpegLoaded, ffmpegLoading])
 
-  const handleFile = useCallback((f: File) => {
-    setFile(f)
-    const url = URL.createObjectURL(f)
-    setFileUrl(url)
-    setResults([])
-    setErrors({})
-    setTrimEnabled(false)
-    setTrimStart(0)
-    setTrimEnd(0)
-    setVideoDuration(0)
-    setVideoError(false)
-    setPoster(null)
-    // generate thumbnail at ~1 s (or 10 % of duration)
+  // ── Cleanup on unmount ───────────────────────────────────────────────────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    setEntries((prev) => {
+      for (const e of prev) {
+        URL.revokeObjectURL(e.fileUrl)
+        for (const r of e.results) URL.revokeObjectURL(r.url)
+      }
+      return []
+    })
+  }, [])
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function updateEntry(id: string, updates: Partial<VideoFileEntry>) {
+    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...updates } : e)))
+  }
+
+  function makeEntry(file: File): VideoFileEntry {
+    const id      = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+    const fileUrl = URL.createObjectURL(file)
+    // generate thumbnail asynchronously
     const thumb = document.createElement('video')
-    thumb.preload = 'metadata'
-    thumb.muted = true
-    thumb.playsInline = true
-    thumb.src = url
+    thumb.preload = 'metadata'; thumb.muted = true; thumb.playsInline = true
+    thumb.src = fileUrl
     const capture = () => {
       try {
-        const canvas = document.createElement('canvas')
-        canvas.width  = thumb.videoWidth  || 640
-        canvas.height = thumb.videoHeight || 360
-        canvas.getContext('2d')?.drawImage(thumb, 0, 0, canvas.width, canvas.height)
-        setPoster(canvas.toDataURL('image/jpeg', 0.7))
-      } catch {
-        // ignore cross-origin / decode errors
-      } finally {
-        thumb.src = ''
-      }
+        const c = document.createElement('canvas')
+        c.width = thumb.videoWidth || 640; c.height = thumb.videoHeight || 360
+        c.getContext('2d')?.drawImage(thumb, 0, 0, c.width, c.height)
+        updateEntry(id, { poster: c.toDataURL('image/jpeg', 0.7) })
+      } catch { /* ignore */ } finally { thumb.src = '' }
     }
     thumb.addEventListener('seeked', capture, { once: true })
     thumb.addEventListener('loadedmetadata', () => {
-      const seekTo = Math.min(1, thumb.duration * 0.1 || 0)
-      thumb.currentTime = seekTo > 0 ? seekTo : 0
+      thumb.currentTime = Math.min(1, (thumb.duration * 0.1) || 0)
     }, { once: true })
     thumb.addEventListener('error', () => { thumb.src = '' }, { once: true })
+    return {
+      id, file, fileUrl, poster: null, videoError: false, videoDuration: 0,
+      trimEnabled: false, trimStart: 0, trimEnd: 0,
+      results: [], errors: {}, formatProgress: {}, processing: false,
+    }
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleFiles = useCallback((files: File[]) => {
+    const newEntries = files.map((f) => makeEntry(f))
+    setEntries((prev) => {
+      if (prev.length === 0) setActiveId(newEntries[0]?.id ?? null)
+      return [...prev, ...newEntries]
+    })
   }, [])
 
-  useEffect(() => () => { if (fileUrl) URL.revokeObjectURL(fileUrl) }, [fileUrl])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleAddMore = useCallback((files: File[]) => {
+    const newEntries = files.map((f) => makeEntry(f))
+    setEntries((prev) => [...prev, ...newEntries])
+    setActiveId((prev) => prev ?? newEntries[0]?.id ?? null)
+  }, [])
 
-  function toggleFormat(fmt: VideoFormat) {
-    setSelectedFormats((prev) => {
-      if (prev.includes(fmt)) return prev.length === 1 ? prev : prev.filter((f) => f !== fmt)
-      return [...prev, fmt]
+  const handleSeek = useCallback((t: number) => {
+    if (videoRef.current) { videoRef.current.currentTime = t; setCurrentTime(t) }
+  }, [])
+
+  function handleRemoveEntry(id: string) {
+    setEntries((prev) => {
+      const target = prev.find((e) => e.id === id)
+      if (target) {
+        URL.revokeObjectURL(target.fileUrl)
+        for (const r of target.results) URL.revokeObjectURL(r.url)
+      }
+      const next = prev.filter((e) => e.id !== id)
+      if (activeId === id) {
+        const idx = prev.findIndex((e) => e.id === id)
+        setActiveId((next[idx] ?? next[idx - 1] ?? next[0] ?? null)?.id ?? null)
+      }
+      return next
     })
   }
 
-  async function handleProcess() {
-    if (!file || !ffmpegLoaded || selectedFormats.length === 0) return
-    setProcessing(true)
-    for (const r of resultsRef.current) URL.revokeObjectURL(r.url)
-    resultsRef.current = []
-    setResults([])
-    setErrors({})
-    setFormatProgress(Object.fromEntries(selectedFormats.map((f) => [f, 1])))
+  function toggleFormat(fmt: VideoFormat) {
+    setSelectedFormats((prev) =>
+      prev.includes(fmt)
+        ? prev.length === 1 ? prev : prev.filter((f) => f !== fmt)
+        : [...prev, fmt],
+    )
+  }
 
-    // Launch all formats in parallel — each gets its own FFmpeg instance
+  async function handleProcess(entryId: string) {
+    const snap = entries.find((e) => e.id === entryId)
+    if (!snap || !ffmpegLoaded || selectedFormats.length === 0 || snap.processing) return
+    for (const r of snap.results) URL.revokeObjectURL(r.url)
+    entryResultsRef.current.set(entryId, [])
+    setEntries((prev) => prev.map((e) => e.id === entryId ? {
+      ...e, processing: true, results: [], errors: {},
+      formatProgress: Object.fromEntries(selectedFormats.map((f) => [f, 1])),
+    } : e))
+
     await Promise.allSettled(
       selectedFormats.map(async (fmt) => {
         const fmtDef = VIDEO_FORMATS.find((f) => f.value === fmt)!
         try {
           const blob = await processVideo(
-            file,
+            snap.file,
             {
               format: fmt, crf, removeAudio,
               audioBitrate: removeAudio ? undefined : audioBitrate,
               scale: scale ?? undefined, preset,
-              trimStart: trimEnabled ? trimStart : undefined,
-              trimEnd:   trimEnabled ? trimEnd   : undefined,
+              trimStart: snap.trimEnabled ? snap.trimStart : undefined,
+              trimEnd:   snap.trimEnabled ? snap.trimEnd   : undefined,
             },
-            (p) => setFormatProgress((prev) => ({ ...prev, [fmt]: Math.max(1, Math.round(p * 100)) })),
+            (p) => setEntries((prev) => prev.map((e) => e.id === entryId ? {
+              ...e, formatProgress: { ...e.formatProgress, [fmt]: Math.max(1, Math.round(p * 100)) },
+            } : e)),
           )
           const result: VideoResult = { blob, url: URL.createObjectURL(blob), format: fmt, ext: fmtDef.ext }
-          resultsRef.current = [...resultsRef.current, result]
-          setResults([...resultsRef.current])
-          setVideoError(false)
-          setFormatProgress((prev) => ({ ...prev, [fmt]: 100 }))
-        } catch (e) {
-          setErrors((prev) => ({ ...prev, [fmt]: e instanceof Error ? e.message : 'Failed' }))
-          setFormatProgress((prev) => ({ ...prev, [fmt]: -1 }))
+          const cur = entryResultsRef.current.get(entryId) ?? []
+          const upd = [...cur, result]
+          entryResultsRef.current.set(entryId, upd)
+          setEntries((prev) => prev.map((e) => e.id === entryId ? {
+            ...e, results: upd, formatProgress: { ...e.formatProgress, [fmt]: 100 },
+          } : e))
+        } catch (err) {
+          setEntries((prev) => prev.map((e) => e.id === entryId ? {
+            ...e,
+            errors: { ...e.errors, [fmt]: err instanceof Error ? err.message : 'Failed' },
+            formatProgress: { ...e.formatProgress, [fmt]: -1 },
+          } : e))
         }
-      })
+      }),
     )
+    setEntries((prev) => prev.map((e) => e.id === entryId ? { ...e, processing: false } : e))
+  }
 
-    setProcessing(false)
+  async function handleProcessAll() {
+    for (const entry of entries) {
+      if (!entry.processing) await handleProcess(entry.id)
+    }
   }
 
   function handleReset() {
-    for (const r of resultsRef.current) URL.revokeObjectURL(r.url)
-    resultsRef.current = []
-    setFile(null); setFileUrl(null); setResults([]); setErrors({}); setFormatProgress({})
-    setTrimEnabled(false); setTrimStart(0); setTrimEnd(0); setVideoDuration(0)
-    setVideoError(false); setPoster(null)
+    for (const e of entries) {
+      URL.revokeObjectURL(e.fileUrl)
+      for (const r of e.results) URL.revokeObjectURL(r.url)
+    }
+    entryResultsRef.current.clear()
+    setEntries([]); setActiveId(null)
   }
 
-  function handleDownload(r: VideoResult) {
-    if (!file) return
-    const base   = file.name.replace(/\.[^.]+$/, '')
+  function handleDownload(r: VideoResult, entry: VideoFileEntry) {
+    const base   = entry.file.name.replace(/\.[^.]+$/, '')
     const suffix = selectedFormats.length > 1 ? `-${r.format}` : ''
-    const a      = document.createElement('a')
-    a.href       = r.url
-    a.download   = `${base}-mz${suffix}.${r.ext}`
-    a.click()
+    const a = document.createElement('a')
+    a.href = r.url; a.download = `${base}-mz${suffix}.${r.ext}`; a.click()
   }
 
-  function handleDownloadAll() {
-    results.forEach((r, i) => setTimeout(() => handleDownload(r), i * 150))
+  function handleDownloadAllFormats(entry: VideoFileEntry) {
+    entry.results.forEach((r, i) => setTimeout(() => handleDownload(r, entry), i * 150))
   }
 
-  // Overall progress = average of all running formats
+  // ── Derived values for active entry display ──────────────────────────────
+  const file           = activeEntry?.file ?? null
+  const fileUrl        = activeEntry?.fileUrl ?? null
+  const results        = activeEntry?.results ?? []
+  const errors         = activeEntry?.errors ?? {}
+  const formatProgress = activeEntry?.formatProgress ?? {}
+  const processing     = activeEntry?.processing ?? false
+  const videoError     = activeEntry?.videoError ?? false
+  const poster         = activeEntry?.poster ?? null
+  const videoDuration  = activeEntry?.videoDuration ?? 0
+  const trimEnabled    = activeEntry?.trimEnabled ?? false
+  const trimStart      = activeEntry?.trimStart ?? 0
+  const trimEnd        = activeEntry?.trimEnd ?? 0
+
   const fmtProgressValues = Object.values(formatProgress).filter((v) => (v ?? -1) >= 0)
   const overallProgress   = fmtProgressValues.length
     ? Math.round(fmtProgressValues.reduce((a, b) => a + (b ?? 0), 0) / selectedFormats.length)
     : 0
 
-  const previewUrl  = results.length > 0 ? results[results.length - 1].url : fileUrl
-  const previewMime = results.length > 0 ? results[results.length - 1].blob.type : (file?.type ?? '')
-  const errorList   = Object.entries(errors) as [VideoFormat, string][]
+  const previewUrl    = results.length > 0 ? results[results.length - 1].url : fileUrl
+  const previewMime   = results.length > 0 ? results[results.length - 1].blob.type : (file?.type ?? '')
+  const errorList     = Object.entries(errors) as [VideoFormat, string][]
+  const anyProcessing = entries.some((e) => e.processing)
 
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="mz-app flex flex-col min-h-screen">
       <div className="mz-topbar">
@@ -344,47 +655,50 @@ function VideoStudio() {
             <span className="mz-badge">{formatBytes(file.size)}</span>
           </>
         )}
+        {entries.length > 1 && (
+          <span className="mz-badge" style={{ background: 'var(--mz-amber)', color: 'rgba(0,0,0,0.75)' }}>
+            {entries.length} files
+          </span>
+        )}
         <div className="flex-1" />
         <span className="mz-badge">FFmpeg · WASM</span>
       </div>
 
-      {!file ? (
+      {entries.length === 0 ? (
+        /* ── Drop zone ── */
         <div className="flex flex-1 items-center justify-center px-6 py-12">
           <div className="w-full max-w-sm">
             <p className="mz-label mb-3">Video Studio</p>
             <h1 className="mb-2 text-[30px] font-light tracking-tight leading-none" style={{ color: 'var(--mz-text)' }}>
-              Drop a video
+              Drop videos
             </h1>
             <p className="mb-8 text-sm" style={{ color: 'var(--mz-text-2)' }}>
-              Convert, compress, strip audio and export to multiple formats in parallel — entirely in your browser.
+              Convert, compress, strip audio and export to multiple formats in parallel — entirely in your browser. Drop multiple files to batch process.
             </p>
-            {(ffmpegLoading || loadError) && (
+            {loadError && (
               <div className="mb-4 flex items-center gap-2.5 rounded-md px-3 py-2.5 text-xs"
                 style={{
-                  border: `1px solid ${loadError ? 'var(--mz-error)' : 'var(--mz-border-2)'}`,
-                  background: loadError ? 'rgba(255,82,82,0.06)' : 'var(--mz-surface-2)',
-                  color: loadError ? 'var(--mz-error)' : 'var(--mz-text-2)',
+                  border: '1px solid var(--mz-error)',
+                  background: 'rgba(255,82,82,0.06)',
+                  color: 'var(--mz-error)',
                 }}
               >
-                {ffmpegLoading && !loadError && (
-                  <svg aria-hidden="true" className="animate-spin shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="10" strokeOpacity="0.3" /><path d="M12 2a10 10 0 0 1 10 10" />
-                  </svg>
-                )}
-                {loadError ?? 'Loading FFmpeg WASM engine...'}
+                {loadError}
               </div>
             )}
             <DropZone
               accept={['video/*', '.mp4', '.webm', '.mov', '.avi', '.mkv']}
-              onFile={handleFile}
-              label="Drop a video here"
-              sublabel="MP4, WebM, MOV, AVI, MKV"
+              onFiles={handleFiles}
+              multiple
+              label="Drop videos here"
+              sublabel="MP4, WebM, MOV, AVI, MKV · multiple files ok"
             />
           </div>
         </div>
       ) : (
+        /* ── Workspace ── */
         <div className="flex flex-1 overflow-hidden">
-          {/* Preview column */}
+          {/* ── Preview column ── */}
           <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-4 gap-3">
             <div className="mz-well overflow-hidden relative">
               {videoError ? (
@@ -397,22 +711,53 @@ function VideoStudio() {
                   </span>
                 </div>
               ) : (
-                <video key={previewUrl ?? ''} ref={videoRef} controls
-                  poster={poster ?? undefined}
-                  className="block w-full rounded-sm" style={{ maxHeight: '58vh', background: '#000' }}
-                  onLoadedMetadata={() => {
-                    if (!videoRef.current) return
-                    const dur = videoRef.current.duration
-                    if (Number.isFinite(dur) && dur > 0) {
-                      setVideoDuration(dur)
-                      setTrimStart(0)
-                      setTrimEnd(dur)
-                    }
-                  }}
-                  onError={() => setVideoError(true)}
-                >
-                  {previewUrl && <source src={previewUrl} type={previewMime || undefined} />}
-                </video>
+                <>
+                  <video key={previewUrl ?? ''} ref={videoRef} controls
+                    poster={poster ?? undefined}
+                    className="block w-full rounded-sm" style={{ maxHeight: '58vh', background: '#000' }}
+                    onLoadedMetadata={() => {
+                      if (!videoRef.current || !activeEntry) return
+                      const dur = videoRef.current.duration
+                      if (Number.isFinite(dur) && dur > 0) {
+                        updateEntry(activeEntry.id, { videoDuration: dur, trimEnd: dur })
+                      }
+                    }}
+                    onTimeUpdate={() => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime) }}
+                    onError={() => { if (activeEntry) updateEntry(activeEntry.id, { videoError: true }) }}
+                  >
+                    {previewUrl && <source src={previewUrl} type={previewMime || undefined} />}
+                  </video>
+
+                  {/* Trim timeline overlay */}
+                  {trimEnabled && videoDuration > 0 && activeEntry && (
+                    <div style={{
+                      padding: '10px 12px 8px',
+                      background: 'rgba(0,0,0,0.72)',
+                      backdropFilter: 'blur(6px)',
+                      borderTop: '1px solid rgba(255,255,255,0.06)',
+                    }}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.45)' }}>Trim range</span>
+                        <button
+                          type="button"
+                          onClick={() => updateEntry(activeEntry.id, { trimStart: 0, trimEnd: videoDuration })}
+                          style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                          onMouseEnter={(ev) => { ev.currentTarget.style.color = 'rgba(255,255,255,0.7)' }}
+                          onMouseLeave={(ev) => { ev.currentTarget.style.color = 'rgba(255,255,255,0.35)' }}
+                        >Reset</button>
+                      </div>
+                      <VideoTrimTimeline
+                        duration={videoDuration}
+                        start={trimStart}
+                        end={trimEnd}
+                        currentTime={currentTime}
+                        onStartChange={(v) => { updateEntry(activeEntry.id, { trimStart: v }); handleSeek(v) }}
+                        onEndChange={(v) => updateEntry(activeEntry.id, { trimEnd: v })}
+                        onSeek={handleSeek}
+                      />
+                    </div>
+                  )}
+                </>
               )}
 
               {/* Processing overlay */}
@@ -462,9 +807,9 @@ function VideoStudio() {
               )}
 
               <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="mz-mono truncate max-w-[200px]" style={{ color: 'var(--mz-text)', fontSize: '11px' }}>{file.name}</span>
-                <span className="mz-mono" style={{ color: 'var(--mz-text-2)', fontSize: '11px' }}>{formatBytes(file.size)}</span>
-                {results.length === 1 && (
+                <span className="mz-mono truncate max-w-[200px]" style={{ color: 'var(--mz-text)', fontSize: '11px' }}>{file?.name}</span>
+                {file && <span className="mz-mono" style={{ color: 'var(--mz-text-2)', fontSize: '11px' }}>{formatBytes(file.size)}</span>}
+                {results.length === 1 && file && (
                   <span className="ml-auto flex items-center gap-2">
                     <span className="mz-mono" style={{ color: 'var(--mz-amber)', fontSize: '11px' }}>
                       {'→'} {formatBytes(results[0].blob.size)}
@@ -491,7 +836,7 @@ function VideoStudio() {
               </div>
             )}
 
-            {/* Outputs */}
+            {/* Outputs for active file */}
             {results.length > 0 && (
               <div className="mz-well">
                 <div className="flex items-center justify-between mb-2">
@@ -503,8 +848,8 @@ function VideoStudio() {
                       </span>
                     )}
                   </span>
-                  {results.length > 1 && !processing && (
-                    <button type="button" onClick={handleDownloadAll}
+                  {results.length > 1 && !processing && activeEntry && (
+                    <button type="button" onClick={() => handleDownloadAllFormats(activeEntry)}
                       className="mz-btn mz-btn-ghost" style={{ padding: '4px 10px', fontSize: '11px', gap: 4 }}>
                       <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -517,23 +862,25 @@ function VideoStudio() {
                 <div className="flex flex-col gap-1.5">
                   {results.map((r) => {
                     const fmtDef = VIDEO_FORMATS.find((f) => f.value === r.format)!
-                    const saved  = file.size > 0 ? Math.round((1 - r.blob.size / file.size) * 100) : 0
+                    const saved  = file && file.size > 0 ? Math.round((1 - r.blob.size / file.size) * 100) : 0
                     return (
                       <div key={r.format} className="flex items-center gap-3 rounded-md px-3 py-2"
                         style={{ background: 'var(--mz-surface-2)', border: '1px solid var(--mz-border)' }}>
                         <span className="font-semibold text-xs" style={{ color: 'var(--mz-text)', minWidth: 40 }}>{fmtDef.label}</span>
                         <span className="opacity-40 text-[10px]">{fmtDef.desc}</span>
                         <span className="mz-mono text-[11px]" style={{ color: 'var(--mz-text-2)' }}>{formatBytes(r.blob.size)}</span>
-                        {saved > 0 && <span className="mz-badge mz-badge-amber">-{saved}%</span>}
+                        {saved > 0 && <span className="mz-badge mz-1badge-amber">-{saved}%</span>}
                         <div className="flex-1" />
-                        <button type="button" onClick={() => handleDownload(r)}
-                          className="mz-btn mz-btn-ghost" style={{ padding: '4px 10px', fontSize: '11px', gap: 4 }}>
-                          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                          </svg>
-                          .{r.ext}
-                        </button>
+                        {activeEntry && (
+                          <button type="button" onClick={() => handleDownload(r, activeEntry)}
+                            className="mz-btn mz-btn-ghost" style={{ padding: '4px 10px', fontSize: '11px', gap: 4 }}>
+                            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                              <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            .{r.ext}
+                          </button>
+                        )}
                       </div>
                     )
                   })}
@@ -542,23 +889,107 @@ function VideoStudio() {
             )}
           </div>
 
-          {/* Sidebar */}
+          {/* ── Sidebar ── */}
           <div className="flex w-72 shrink-0 flex-col overflow-y-auto border-l px-4 pt-4 pb-3 xl:w-80"
             style={{ borderColor: 'var(--mz-border)', background: 'var(--mz-surface)' }}>
 
-            {!ffmpegLoaded && (
+            {/* ── File queue ── */}
+            <Section
+              title={entries.length > 1 ? `Queue · ${entries.length} files` : 'File'}
+              badge={
+                entries.filter((e) => e.results.length > 0).length > 0
+                  ? `${entries.filter((e) => e.results.length > 0).length}/${entries.length} done`
+                  : undefined
+              }
+            >
+              <div className="flex flex-col gap-1 mb-2">
+                {entries.map((entry) => {
+                  const isActive = entry.id === activeId
+                  const ep = Object.values(entry.formatProgress).filter((v) => (v ?? -1) >= 0)
+                  const epPct = ep.length
+                    ? Math.round(ep.reduce((a, b) => a + (b ?? 0), 0) / selectedFormats.length)
+                    : 0
+                  return (
+                    <div
+                      key={entry.id}
+                      className="flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer"
+                      style={{
+                        background: isActive ? 'var(--mz-surface-2)' : 'transparent',
+                        border: `1px solid ${isActive ? 'var(--mz-border-2)' : 'transparent'}`,
+                        transition: 'background 0.1s',
+                      }}
+                      onClick={() => { setActiveId(entry.id); setCurrentTime(0) }}
+                      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'var(--mz-surface-2)' }}
+                      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
+                    >
+                      {/* Thumbnail */}
+                      <div className="shrink-0 rounded overflow-hidden"
+                        style={{ width: 32, height: 18, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {entry.poster
+                          ? <img src={entry.poster} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        }
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="mz-mono truncate" style={{ fontSize: '10px', color: isActive ? 'var(--mz-text)' : 'var(--mz-text-2)' }}>
+                          {entry.file.name}
+                        </p>
+                        <p style={{ fontSize: '9px', color: 'var(--mz-text-2)' }}>{formatBytes(entry.file.size)}</p>
+                      </div>
+                      {entry.processing
+                        ? <span className="mz-mono shrink-0" style={{ fontSize: '9px', color: 'var(--mz-amber)' }}>{epPct > 0 ? `${epPct}%` : '···'}</span>
+                        : entry.results.length > 0
+                          ? <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--mz-amber)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+                          : null
+                      }
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleRemoveEntry(entry.id) }}
+                        className="shrink-0"
+                        style={{ color: 'var(--mz-text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: '1px 3px', fontSize: '14px', lineHeight: 1, opacity: 0.5 }}
+                        title="Remove"
+                        onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--mz-error)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--mz-text-2)' }}
+                      >×</button>
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Add more files */}
+              <button
+                type="button"
+                className="mz-btn mz-btn-ghost w-full gap-2"
+                style={{ fontSize: '11px', justifyContent: 'center' }}
+                onClick={() => addMoreRef.current?.click()}
+              >
+                <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                Add more files
+              </button>
+              <input
+                ref={addMoreRef}
+                type="file"
+                accept="video/*,.mp4,.webm,.mov,.avi,.mkv"
+                multiple
+                className="sr-only"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? [])
+                  if (files.length) handleAddMore(files)
+                  e.target.value = ''
+                }}
+                tabIndex={-1}
+              />
+            </Section>
+
+            {loadError && (
               <div className="mb-3 flex items-center gap-2 rounded-md px-3 py-2.5 text-xs"
                 style={{
-                  border: `1px solid ${loadError ? 'var(--mz-error)' : 'var(--mz-border-2)'}`,
-                  background: loadError ? 'rgba(255,82,82,0.06)' : 'var(--mz-surface-2)',
-                  color: loadError ? 'var(--mz-error)' : 'var(--mz-text-2)',
+                  border: '1px solid var(--mz-error)',
+                  background: 'rgba(255,82,82,0.06)',
+                  color: 'var(--mz-error)',
                 }}>
-                {ffmpegLoading && !loadError && (
-                  <svg aria-hidden="true" className="animate-spin shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="10" strokeOpacity="0.3" /><path d="M12 2a10 10 0 0 1 10 10" />
-                  </svg>
-                )}
-                {loadError ?? 'Loading FFmpeg WASM...'}
+                {loadError}
               </div>
             )}
 
@@ -670,35 +1101,29 @@ function VideoStudio() {
               </div>
             </Section>
 
-            <Section
-              title="Trim"
-              badge={trimEnabled && videoDuration > 0 ? `${fmtTime(trimStart)} – ${fmtTime(trimEnd)}` : undefined}
-            >
-              <div className="space-y-3">
-                <label className="flex cursor-pointer items-center gap-3">
-                  <button type="button" onClick={() => setTrimEnabled((v) => !v)}
-                    className={`mz-toggle ${trimEnabled ? 'is-on' : ''}`}>
-                    <span className="mz-toggle-knob" />
-                  </button>
-                  <span className="text-xs font-semibold" style={{ color: 'var(--mz-text)' }}>Trim clip</span>
-                </label>
-                {trimEnabled && videoDuration > 0 && (
-                  <>
-                    <TrimBar
-                      duration={videoDuration}
-                      start={trimStart}
-                      end={trimEnd}
-                      onStartChange={setTrimStart}
-                      onEndChange={setTrimEnd}
-                      videoRef={videoRef as React.RefObject<HTMLVideoElement>}
-                    />
+            {/* Trim — per active file */}
+            {activeEntry && (
+              <Section
+                title="Trim"
+                badge={trimEnabled && videoDuration > 0 ? `${fmtTime(trimStart)} – ${fmtTime(trimEnd)}` : undefined}
+              >
+                <div className="space-y-3">
+                  <label className="flex cursor-pointer items-center gap-3">
+                    <button type="button"
+                      onClick={() => updateEntry(activeEntry.id, { trimEnabled: !trimEnabled })}
+                      className={`mz-toggle ${trimEnabled ? 'is-on' : ''}`}>
+                      <span className="mz-toggle-knob" />
+                    </button>
+                    <span className="text-xs font-semibold" style={{ color: 'var(--mz-text)' }}>Trim clip</span>
+                  </label>
+                  {trimEnabled && videoDuration > 0 && (
                     <div className="flex items-center justify-between gap-1 mt-1">
                       <div className="flex flex-col items-start gap-0.5">
                         <span style={{ fontSize: 9, color: 'var(--mz-text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Start</span>
                         <input
                           type="number" min={0} max={trimEnd - 0.25} step={0.1}
                           value={trimStart.toFixed(1)}
-                          onChange={(e) => setTrimStart(Math.max(0, Math.min(+e.target.value, trimEnd - 0.25)))}
+                          onChange={(e) => updateEntry(activeEntry.id, { trimStart: Math.max(0, Math.min(+e.target.value, trimEnd - 0.25)) })}
                           className="mz-mono"
                           style={{ width: 56, fontSize: 12, background: 'var(--mz-surface-2)', border: '1px solid var(--mz-border)', borderRadius: 4, padding: '3px 6px', color: 'var(--mz-amber)' }}
                         />
@@ -712,34 +1137,27 @@ function VideoStudio() {
                         <input
                           type="number" min={trimStart + 0.25} max={videoDuration} step={0.1}
                           value={trimEnd.toFixed(1)}
-                          onChange={(e) => setTrimEnd(Math.min(videoDuration, Math.max(+e.target.value, trimStart + 0.25)))}
+                          onChange={(e) => updateEntry(activeEntry.id, { trimEnd: Math.min(videoDuration, Math.max(+e.target.value, trimStart + 0.25)) })}
                           className="mz-mono"
                           style={{ width: 56, fontSize: 12, background: 'var(--mz-surface-2)', border: '1px solid var(--mz-border)', borderRadius: 4, padding: '3px 6px', color: 'var(--mz-amber)', textAlign: 'right' }}
                         />
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => { setTrimStart(0); setTrimEnd(videoDuration) }}
-                      style={{ fontSize: '10px', color: 'var(--mz-text-2)' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--mz-text)' }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--mz-text-2)' }}
-                    >
-                      Reset to full
-                    </button>
-                  </>
-                )}
-                {trimEnabled && videoDuration === 0 && (
-                  <p style={{ fontSize: '10px', color: 'var(--mz-text-2)' }}>Waiting for video metadata…</p>
-                )}
-              </div>
-            </Section>
+                  )}
+                  {trimEnabled && videoDuration === 0 && (
+                    <p style={{ fontSize: '10px', color: 'var(--mz-text-2)' }}>Waiting for video metadata…</p>
+                  )}
+                </div>
+              </Section>
+            )}
 
             <div className="flex-1" />
 
             <div className="flex flex-col gap-1.5">
-              <button type="button" onClick={handleProcess}
-                disabled={processing || !ffmpegLoaded}
+              {/* Process current file */}
+              <button type="button"
+                onClick={() => activeEntry && handleProcess(activeEntry.id)}
+                disabled={processing || !ffmpegLoaded || !activeEntry}
                 className="mz-btn mz-btn-primary gap-1.5"
                 style={!processing && ffmpegLoaded ? { background: 'var(--mz-amber)', borderColor: 'var(--mz-amber)', color: 'var(--mz-accent-fg)' } : {}}>
                 {processing ? (
@@ -749,12 +1167,37 @@ function VideoStudio() {
                     </svg>
                     {overallProgress > 0 ? `${overallProgress}%` : 'Processing...'}
                   </>
-                ) : !ffmpegLoaded ? 'Loading engine...' : (
+                ) : (
                   results.length > 0
                     ? `Re-process${selectedFormats.length > 1 ? ` (${selectedFormats.length})` : ''}`
-                    : `Process${selectedFormats.length > 1 ? ` ${selectedFormats.length} in parallel` : ' Video'}`
+                    : `Process${selectedFormats.length > 1 ? ` ${selectedFormats.length} formats` : ''}`
                 )}
               </button>
+
+              {/* Process all files */}
+              {entries.length > 1 && (
+                <button type="button"
+                  onClick={handleProcessAll}
+                  disabled={anyProcessing || !ffmpegLoaded}
+                  className="mz-btn mz-btn-ghost gap-1.5"
+                  style={{ fontSize: '11px' }}>
+                  {anyProcessing ? (
+                    <>
+                      <svg aria-hidden="true" className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10" strokeOpacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/>
+                      </svg>
+                      Processing all...
+                    </>
+                  ) : (
+                    <>
+                      <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                      </svg>
+                      Process all {entries.length} files
+                    </>
+                  )}
+                </button>
+              )}
 
               {processing && (
                 <div className="space-y-1">
@@ -783,7 +1226,7 @@ function VideoStudio() {
                 style={{ fontSize: '11px', color: 'var(--mz-text-2)' }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--mz-text)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--mz-text-2)' }}>
-                Open different file
+                Clear all files
               </button>
             </div>
           </div>

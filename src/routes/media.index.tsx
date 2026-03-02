@@ -34,6 +34,32 @@ const tools = [
       </svg>
     ),
   },
+  {
+    to: '/media/qr' as const,
+    label: 'QR Studio',
+    description: 'Feature-rich QR code generator with custom dot shapes, gradients, eye styles, embedded logos, and multi-format export.',
+    tag: 'Canvas · Local',
+    tagClass: 'mz-badge',
+    cardClass: '',
+    formats: ['PNG', 'SVG', 'WebP', 'JPEG'],
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" stroke="currentColor">
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="5" y="5" width="3" height="3" fill="currentColor" stroke="none" />
+        <rect x="16" y="5" width="3" height="3" fill="currentColor" stroke="none" />
+        <rect x="5" y="16" width="3" height="3" fill="currentColor" stroke="none" />
+        <line x1="14" y1="14" x2="14" y2="14" strokeWidth="2.5" strokeLinecap="round" />
+        <line x1="17" y1="14" x2="17" y2="14" strokeWidth="2.5" strokeLinecap="round" />
+        <line x1="20" y1="14" x2="20" y2="14" strokeWidth="2.5" strokeLinecap="round" />
+        <line x1="14" y1="17" x2="14" y2="17" strokeWidth="2.5" strokeLinecap="round" />
+        <line x1="20" y1="17" x2="20" y2="17" strokeWidth="2.5" strokeLinecap="round" />
+        <line x1="14" y1="20" x2="14" y2="20" strokeWidth="2.5" strokeLinecap="round" />
+        <line x1="17" y1="20" x2="20" y2="20" strokeWidth="2.5" strokeLinecap="round" />
+      </svg>
+    ),
+  },
 ]
 
 function MediaHub() {
@@ -65,7 +91,7 @@ function MediaHub() {
           </p>
         </div>
 
-        <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
+        <div className="grid w-full max-w-3xl gap-2 sm:grid-cols-3">
           {tools.map((tool) => (
             <Link
               key={tool.to}
@@ -81,9 +107,11 @@ function MediaHub() {
                 {tool.icon}
               </div>
 
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-sm font-semibold" style={{ color: 'var(--mz-text)' }}>{tool.label}</span>
-                <span className={`mz-badge ${tool.tagClass}`}>{tool.tag}</span>
+              <div className="mb-2 flex items-center gap-2 flex-nowrap min-w-0">
+                <span className="text-sm font-semibold whitespace-nowrap truncate min-w-0" style={{ color: 'var(--mz-text)' }}>
+                  {tool.label}
+                </span>
+                <span className={`mz-badge ${tool.tagClass} whitespace-nowrap shrink-0`}>{tool.tag}</span>
               </div>
 
               <p className="mb-5 text-xs leading-relaxed" style={{ color: 'var(--mz-text-2)' }}>

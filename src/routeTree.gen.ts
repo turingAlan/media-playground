@@ -9,25 +9,12 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as RssDotxmlRouteImport } from './routes/rss[.]xml'
-import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as MediaIndexRouteImport } from './routes/media.index'
-import { Route as BlogIndexRouteImport } from './routes/blog.index'
 import { Route as MediaVideoRouteImport } from './routes/media.video'
+import { Route as MediaQrRouteImport } from './routes/media.qr'
 import { Route as MediaImageRouteImport } from './routes/media.image'
-import { Route as BlogSlugRouteImport } from './routes/blog.$slug'
 
-const RssDotxmlRoute = RssDotxmlRouteImport.update({
-  id: '/rss.xml',
-  path: '/rss.xml',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AboutRoute = AboutRouteImport.update({
-  id: '/about',
-  path: '/about',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -38,14 +25,14 @@ const MediaIndexRoute = MediaIndexRouteImport.update({
   path: '/media/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BlogIndexRoute = BlogIndexRouteImport.update({
-  id: '/blog/',
-  path: '/blog/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const MediaVideoRoute = MediaVideoRouteImport.update({
   id: '/media/video',
   path: '/media/video',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MediaQrRoute = MediaQrRouteImport.update({
+  id: '/media/qr',
+  path: '/media/qr',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MediaImageRoute = MediaImageRouteImport.update({
@@ -53,103 +40,53 @@ const MediaImageRoute = MediaImageRouteImport.update({
   path: '/media/image',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BlogSlugRoute = BlogSlugRouteImport.update({
-  id: '/blog/$slug',
-  path: '/blog/$slug',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
-  '/rss.xml': typeof RssDotxmlRoute
-  '/blog/$slug': typeof BlogSlugRoute
   '/media/image': typeof MediaImageRoute
+  '/media/qr': typeof MediaQrRoute
   '/media/video': typeof MediaVideoRoute
-  '/blog/': typeof BlogIndexRoute
   '/media/': typeof MediaIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
-  '/rss.xml': typeof RssDotxmlRoute
-  '/blog/$slug': typeof BlogSlugRoute
   '/media/image': typeof MediaImageRoute
+  '/media/qr': typeof MediaQrRoute
   '/media/video': typeof MediaVideoRoute
-  '/blog': typeof BlogIndexRoute
   '/media': typeof MediaIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
-  '/rss.xml': typeof RssDotxmlRoute
-  '/blog/$slug': typeof BlogSlugRoute
   '/media/image': typeof MediaImageRoute
+  '/media/qr': typeof MediaQrRoute
   '/media/video': typeof MediaVideoRoute
-  '/blog/': typeof BlogIndexRoute
   '/media/': typeof MediaIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths:
-    | '/'
-    | '/about'
-    | '/rss.xml'
-    | '/blog/$slug'
-    | '/media/image'
-    | '/media/video'
-    | '/blog/'
-    | '/media/'
+  fullPaths: '/' | '/media/image' | '/media/qr' | '/media/video' | '/media/'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/about'
-    | '/rss.xml'
-    | '/blog/$slug'
-    | '/media/image'
-    | '/media/video'
-    | '/blog'
-    | '/media'
+  to: '/' | '/media/image' | '/media/qr' | '/media/video' | '/media'
   id:
     | '__root__'
     | '/'
-    | '/about'
-    | '/rss.xml'
-    | '/blog/$slug'
     | '/media/image'
+    | '/media/qr'
     | '/media/video'
-    | '/blog/'
     | '/media/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AboutRoute: typeof AboutRoute
-  RssDotxmlRoute: typeof RssDotxmlRoute
-  BlogSlugRoute: typeof BlogSlugRoute
   MediaImageRoute: typeof MediaImageRoute
+  MediaQrRoute: typeof MediaQrRoute
   MediaVideoRoute: typeof MediaVideoRoute
-  BlogIndexRoute: typeof BlogIndexRoute
   MediaIndexRoute: typeof MediaIndexRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/rss.xml': {
-      id: '/rss.xml'
-      path: '/rss.xml'
-      fullPath: '/rss.xml'
-      preLoaderRoute: typeof RssDotxmlRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/about': {
-      id: '/about'
-      path: '/about'
-      fullPath: '/about'
-      preLoaderRoute: typeof AboutRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -164,18 +101,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MediaIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/blog/': {
-      id: '/blog/'
-      path: '/blog'
-      fullPath: '/blog/'
-      preLoaderRoute: typeof BlogIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/media/video': {
       id: '/media/video'
       path: '/media/video'
       fullPath: '/media/video'
       preLoaderRoute: typeof MediaVideoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/media/qr': {
+      id: '/media/qr'
+      path: '/media/qr'
+      fullPath: '/media/qr'
+      preLoaderRoute: typeof MediaQrRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/media/image': {
@@ -185,24 +122,14 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MediaImageRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/blog/$slug': {
-      id: '/blog/$slug'
-      path: '/blog/$slug'
-      fullPath: '/blog/$slug'
-      preLoaderRoute: typeof BlogSlugRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AboutRoute: AboutRoute,
-  RssDotxmlRoute: RssDotxmlRoute,
-  BlogSlugRoute: BlogSlugRoute,
   MediaImageRoute: MediaImageRoute,
+  MediaQrRoute: MediaQrRoute,
   MediaVideoRoute: MediaVideoRoute,
-  BlogIndexRoute: BlogIndexRoute,
   MediaIndexRoute: MediaIndexRoute,
 }
 export const routeTree = rootRouteImport

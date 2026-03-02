@@ -21,26 +21,19 @@
     "@ffmpeg/core-mt": "0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
+    "@imgly/background-removal": "^1.7.0",
     "@tailwindcss/vite": "^4.1.18",
-    "@tanstack/react-devtools": "^0.7.0",
     "@tanstack/react-router": "^1.132.0",
-    "@tanstack/react-router-devtools": "^1.132.0",
     "@tanstack/react-router-ssr-query": "^1.131.7",
     "@tanstack/react-start": "^1.132.0",
     "@tanstack/router-plugin": "^1.132.0",
-    "lucide-react": "^0.545.0",
+    "qr-code-styling": "^1.9.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.4",
-    "@content-collections/core": "^0.13.1",
-    "@content-collections/markdown": "^0.1.4",
-    "@content-collections/mdx": "^0.2.2",
-    "@content-collections/vite": "^0.2.8",
-    "@tailwindcss/typography": "^0.5.16",
-    "@tanstack/devtools-vite": "^0.3.11",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.2.0",
     "@types/node": "^22.10.2",
@@ -48,13 +41,10 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",
     "babel-plugin-react-compiler": "^1.0.0",
-    "jsdom": "^27.0.0",
-    "remark-gfm": "^4.0.1",
     "typescript": "^5.7.2",
     "vite": "^7.1.7",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.0.5",
-    "wrangler": "^4.40.3",
-    "zod": "^4.3.5"
+    "wrangler": "^4.40.3"
   }
 }

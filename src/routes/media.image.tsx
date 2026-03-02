@@ -1,5 +1,6 @@
+import { removeBackground } from '@imgly/background-removal'
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CropCanvas, { type CropRect } from '#/components/image/CropCanvas'
 import DropZone from '#/components/media/DropZone'
 import {
@@ -21,6 +22,41 @@ type ResultState = {
   url: string
   width: number
   height: number
+}
+
+type BgUndoState = {
+  file: File
+  fileUrl: string
+  dims: Dims | null
+  imgEl: HTMLImageElement | null
+  result: ResultState | null
+  showResult: boolean
+}
+
+type ImageFileEntry = {
+  id: string
+  file: File
+  fileUrl: string
+  dims: Dims | null
+  imgEl: HTMLImageElement | null
+  rotation: number
+  cropMode: boolean
+  cropRect: CropRect | null
+  cropAspect: number | null
+  cropRotation: number
+  customW: string
+  customH: string
+  maintainAR: boolean
+  targetAspect: number | null
+  result: ResultState | null
+  error: string | null
+  showResult: boolean
+  processing: boolean
+  progress: number
+  bgRemoving: boolean
+  bgRemoveProgress: string
+  bgFillColor: string
+  bgUndo: BgUndoState | null
 }
 
 // ─── Section divider ──────────────────────────────────────────────────────────
@@ -293,106 +329,73 @@ function RotationDial({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 function ImageStudio() {
-  // File
-  const [file, setFile] = useState<File | null>(null)
-  const [fileUrl, setFileUrl] = useState<string | null>(null)
-  const [dims, setDims] = useState<Dims | null>(null)
+  // ── File queue ───────────────────────────────────────────────────────────
+  const [entries, setEntries] = useState<ImageFileEntry[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
 
-  // Tools
+  // ── Global settings ──────────────────────────────────────────────────────
   const [format, setFormat] = useState<ImageFormat>('image/webp')
   const [quality, setQuality] = useState(0.85)
-  const [rotation, setRotation] = useState(0)
-  const [targetAspect, setTargetAspect] = useState<number | null>(null)
-  const [cropMode, setCropMode] = useState(false)
-  const [cropRect, setCropRect] = useState<CropRect | null>(null)
-  const [cropAspect, setCropAspect] = useState<number | null>(null)
-  const [cropRotation, setCropRotation] = useState(0)
-  const [customW, setCustomW] = useState('')
-  const [customH, setCustomH] = useState('')
-  const [maintainAR, setMaintainAR] = useState(true)
 
-  // Processing
-  const [processing, setProcessing] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [result, setResult] = useState<ResultState | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [showResult, setShowResult] = useState(false)
+  // ── Refs ─────────────────────────────────────────────────────────────────
+  const liveCanvasRef  = useRef<HTMLCanvasElement>(null)
+  const imgElRef       = useRef<HTMLImageElement | null>(null)
+  const addMoreRef     = useRef<HTMLInputElement>(null)
+  const prevResultUrls = useRef<Map<string, string>>(new Map())
 
-  // Live preview
-  const liveCanvasRef = useRef<HTMLCanvasElement>(null)
-  const imgElRef = useRef<HTMLImageElement | null>(null)
-  const prevResultUrl = useRef<string | null>(null)
+  // ── Active entry ─────────────────────────────────────────────────────────
+  const activeEntry = useMemo(
+    () => entries.find((e) => e.id === activeId) ?? null,
+    [entries, activeId],
+  )
 
-  // ─── File handling ──────────────────────────────────────────────────────────
+  // Sync imgElRef to active entry's loaded image
+  useEffect(() => { imgElRef.current = activeEntry?.imgEl ?? null }, [activeEntry])
 
-  const handleFile = useCallback((f: File) => {
-    const url = URL.createObjectURL(f)
-    setFile(f)
-    setFileUrl(url)
-    setResult(null)
-    setError(null)
-    setShowResult(false)
-    setCropMode(false)
-    setCropRect(null)
-    setRotation(0)
-    setTargetAspect(null)
-    setCustomW('')
-    setCustomH('')
-    const img = new Image()
-    img.onload = () => {
-      setDims({ width: img.naturalWidth, height: img.naturalHeight })
-      imgElRef.current = img
-    }
-    img.src = url
+  // Cleanup on unmount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    setEntries((prev) => {
+      for (const e of prev) {
+        URL.revokeObjectURL(e.fileUrl)
+        if (e.result?.url) URL.revokeObjectURL(e.result.url)
+        if (e.bgUndo?.fileUrl) URL.revokeObjectURL(e.bgUndo.fileUrl)
+      }
+      return []
+    })
   }, [])
 
-  useEffect(() => {
-    return () => { if (fileUrl) URL.revokeObjectURL(fileUrl) }
-  }, [fileUrl])
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function updateEntry(id: string, updates: Partial<ImageFileEntry>) {
+    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...updates } : e)))
+  }
 
-  useEffect(() => {
-    return () => { if (result?.url) URL.revokeObjectURL(result.url) }
-  }, [result])
+  function updateActive(updates: Partial<ImageFileEntry>) {
+    if (activeId) updateEntry(activeId, updates)
+  }
 
-  // ─── Live preview rendering ─────────────────────────────────────────────────
-
+  // ── drawLivePreview ──────────────────────────────────────────────────────
   const drawLivePreview = useCallback(() => {
     const canvas = liveCanvasRef.current
     const img = imgElRef.current
-    if (!canvas || !img || !dims) return
+    if (!canvas || !img || !activeEntry?.dims) return
+    const { dims, cropMode, cropRect, targetAspect, rotation, cropRotation } = activeEntry
 
-    // Source region (before rotation)
-    let srcX = 0
-    let srcY = 0
-    let srcW = dims.width
-    let srcH = dims.height
-
+    let srcX = 0, srcY = 0, srcW = dims.width, srcH = dims.height
     if (cropMode && cropRect && cropRect.width > 0 && cropRect.height > 0) {
-      srcX = cropRect.x; srcY = cropRect.y
-      srcW = cropRect.width; srcH = cropRect.height
+      srcX = cropRect.x; srcY = cropRect.y; srcW = cropRect.width; srcH = cropRect.height
     } else if (targetAspect) {
       const imgAspect = dims.width / dims.height
-      if (targetAspect > imgAspect) {
-        srcW = dims.width
-        srcH = dims.width / targetAspect
-        srcY = (dims.height - srcH) / 2
-      } else {
-        srcH = dims.height
-        srcW = dims.height * targetAspect
-        srcX = (dims.width - srcW) / 2
-      }
+      if (targetAspect > imgAspect) { srcW = dims.width; srcH = dims.width / targetAspect; srcY = (dims.height - srcH) / 2 }
+      else { srcH = dims.height; srcW = dims.height * targetAspect; srcX = (dims.width - srcW) / 2 }
     }
 
-    // Rotated output dimensions
-    const rad = (rotation * Math.PI) / 180
-    const cos = Math.abs(Math.cos(rad))
-    const sin = Math.abs(Math.sin(rad))
+    const effectiveRot = rotation + (cropMode ? cropRotation : 0)
+    const rad = (effectiveRot * Math.PI) / 180
+    const cos = Math.abs(Math.cos(rad)); const sin = Math.abs(Math.sin(rad))
     const outW = Math.round(srcW * cos + srcH * sin)
     const outH = Math.round(srcW * sin + srcH * cos)
-
-    canvas.width = outW
-    canvas.height = outH
-
+    canvas.width = outW; canvas.height = outH
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.clearRect(0, 0, outW, outH)
@@ -401,164 +404,329 @@ function ImageStudio() {
     ctx.rotate(rad)
     ctx.drawImage(img, srcX, srcY, srcW, srcH, -srcW / 2, -srcH / 2, srcW, srcH)
     ctx.restore()
-  }, [dims, rotation, cropMode, cropRect, targetAspect])
+  }, [activeEntry])
 
-  // Re-render live preview whenever controls change
+  // Re-draw whenever active entry or its settings change
   useEffect(() => {
-    if (!cropMode) drawLivePreview()
-  }, [drawLivePreview, cropMode])
+    if (activeEntry && !activeEntry.cropMode) drawLivePreview()
+  }, [drawLivePreview, activeEntry])
 
-  // When image first loads
-  useEffect(() => {
-    const img = imgElRef.current
-    if (!img || !dims) return
-    drawLivePreview()
-  }, [dims, drawLivePreview])
+  // ── File handling ─────────────────────────────────────────────────────────
+  const makeImageEntry = useCallback((f: File): ImageFileEntry => {
+    const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+    const url = URL.createObjectURL(f)
+    const img = new Image()
+    img.onload = () => {
+      setEntries((prev) => prev.map((e) => e.id === id
+        ? { ...e, dims: { width: img.naturalWidth, height: img.naturalHeight }, imgEl: img }
+        : e,
+      ))
+    }
+    img.src = url
+    return {
+      id, file: f, fileUrl: url, dims: null, imgEl: null,
+      rotation: 0, cropMode: false, cropRect: null, cropAspect: null, cropRotation: 0,
+      customW: '', customH: '', maintainAR: true, targetAspect: null,
+      result: null, error: null, showResult: false, processing: false, progress: 0,
+      bgRemoving: false, bgRemoveProgress: '', bgFillColor: 'transparent', bgUndo: null,
+    }
+  }, [])
 
-  // ─── Crop tool helpers ──────────────────────────────────────────────────────
+  const handleFiles = useCallback((newFiles: File[]) => {
+    const newEntries = newFiles.map(makeImageEntry)
+    setEntries((prev) => {
+      if (prev.length === 0) setActiveId(newEntries[0]?.id ?? null)
+      return [...prev, ...newEntries]
+    })
+  }, [makeImageEntry])
 
+  const handleAddMore = useCallback((newFiles: File[]) => {
+    const newEntries = newFiles.map(makeImageEntry)
+    setEntries((prev) => [...prev, ...newEntries])
+    setActiveId((prev) => prev ?? newEntries[0]?.id ?? null)
+  }, [makeImageEntry])
+
+  function handleRemoveEntry(id: string) {
+    setEntries((prev) => {
+      const target = prev.find((e) => e.id === id)
+      if (target) {
+        URL.revokeObjectURL(target.fileUrl)
+        if (target.result?.url) URL.revokeObjectURL(target.result.url)
+        if (target.bgUndo?.fileUrl) URL.revokeObjectURL(target.bgUndo.fileUrl)
+      }
+      const next = prev.filter((e) => e.id !== id)
+      if (activeId === id) {
+        const idx = prev.findIndex((e) => e.id === id)
+        setActiveId((next[idx] ?? next[idx - 1] ?? next[0] ?? null)?.id ?? null)
+      }
+      return next
+    })
+  }
+
+  // ── Crop helpers ──────────────────────────────────────────────────────────
   function enterCropMode() {
-    if (!dims) return
-    setCropRect(cropRect && cropRect.width > 0
-      ? cropRect
-      : { x: 0, y: 0, width: dims.width, height: dims.height },
-    )
-    setCropRotation(0)
-    setShowResult(false)
-    setCropMode(true)
+    if (!activeEntry?.dims) return
+    const rect = activeEntry.cropRect && activeEntry.cropRect.width > 0
+      ? activeEntry.cropRect
+      : { x: 0, y: 0, width: activeEntry.dims.width, height: activeEntry.dims.height }
+    updateActive({ cropMode: true, cropRect: rect, cropRotation: 0, showResult: false })
   }
 
   function confirmCrop() {
-    // Merge fine crop rotation into main rotation
-    if (cropRotation !== 0) {
-      setRotation((r) => ((r + cropRotation + 360) % 360))
-    }
-    setCropRotation(0)
-    setCropMode(false)
-    // live preview will update via state change
+    if (!activeEntry) return
+    updateActive({
+      ...(activeEntry.cropRotation !== 0
+        ? { rotation: (activeEntry.rotation + activeEntry.cropRotation + 360) % 360 }
+        : {}),
+      cropRotation: 0, cropMode: false,
+    })
   }
 
-  function cancelCrop() {
-    setCropMode(false)
-    setCropRotation(0)
-    setCropRect(null)
-  }
+  function cancelCrop() { updateActive({ cropMode: false, cropRotation: 0 }) }
 
-  // ─── Custom resize ──────────────────────────────────────────────────────────
-
+  // ── Custom resize helpers ─────────────────────────────────────────────────
   function handleCustomWChange(v: string) {
-    setCustomW(v)
-    if (maintainAR && dims && v) {
+    if (!activeEntry) return
+    const u: Partial<ImageFileEntry> = { customW: v }
+    if (activeEntry.maintainAR && activeEntry.dims && v) {
       const nw = parseInt(v)
-      if (!Number.isNaN(nw)) setCustomH(String(Math.round(nw * (dims.height / dims.width))))
+      if (!Number.isNaN(nw)) u.customH = String(Math.round(nw * (activeEntry.dims.height / activeEntry.dims.width)))
     }
+    updateActive(u)
   }
 
   function handleCustomHChange(v: string) {
-    setCustomH(v)
-    if (maintainAR && dims && v) {
+    if (!activeEntry) return
+    const u: Partial<ImageFileEntry> = { customH: v }
+    if (activeEntry.maintainAR && activeEntry.dims && v) {
       const nh = parseInt(v)
-      if (!Number.isNaN(nh)) setCustomW(String(Math.round(nh * (dims.width / dims.height))))
+      if (!Number.isNaN(nh)) u.customW = String(Math.round(nh * (activeEntry.dims.width / activeEntry.dims.height)))
     }
+    updateActive(u)
   }
 
-  // ─── Build ops for export ───────────────────────────────────────────────────
-
-  function buildOps(): ImageOperation[] {
+  // ── Build ops ─────────────────────────────────────────────────────────────
+  function buildOps(entry: ImageFileEntry): ImageOperation[] {
     const ops: ImageOperation[] = []
-
-    if (cropRect && cropRect.width > 0 && cropRect.height > 0) {
-      ops.push({ kind: 'crop', ...cropRect })
-    }
-
-    if (rotation !== 0) {
-      ops.push({ kind: 'rotate', degrees: rotation })
-    }
-
-    const nw = parseInt(customW)
-    const nh = parseInt(customH)
+    const { cropRect, rotation, customW, customH, targetAspect, dims } = entry
+    if (cropRect && cropRect.width > 0 && cropRect.height > 0) ops.push({ kind: 'crop', ...cropRect })
+    if (rotation !== 0) ops.push({ kind: 'rotate', degrees: rotation })
+    const nw = parseInt(customW); const nh = parseInt(customH)
     if (nw > 0 && nh > 0) {
       ops.push({ kind: 'resize', width: nw, height: nh, fit: 'fill' })
     } else if (targetAspect && dims) {
       const baseW = cropRect && cropRect.width > 0 ? cropRect.width : dims.width
       const baseH = cropRect && cropRect.height > 0 ? cropRect.height : dims.height
       const newH = Math.round(baseW / targetAspect)
-      if (newH !== baseH) {
-        ops.push({ kind: 'resize', width: baseW, height: newH, fit: 'cover' })
-      }
+      if (newH !== baseH) ops.push({ kind: 'resize', width: baseW, height: newH, fit: 'cover' })
     }
-
     return ops
   }
 
-  // ─── Export ─────────────────────────────────────────────────────────────────
-
-  async function handleProcess() {
-    if (!file) return
-    setProcessing(true)
-    setProgress(0)
-    setError(null)
+  // ── Export ────────────────────────────────────────────────────────────────
+  async function handleProcess(entryId: string) {
+    const entry = entries.find((e) => e.id === entryId)
+    if (!entry) return
+    updateEntry(entryId, { processing: true, progress: 0, error: null })
     try {
-      const ops = buildOps()
+      const ops = buildOps(entry)
       const { blob, width, height } = await processImage({
-        file,
-        operations: ops,
-        outputFormat: format,
-        quality,
-        onProgress: setProgress,
+        file: entry.file, operations: ops, outputFormat: format, quality,
+        onProgress: (p) => updateEntry(entryId, { progress: p }),
       })
-      if (prevResultUrl.current) URL.revokeObjectURL(prevResultUrl.current)
+      const prevUrl = prevResultUrls.current.get(entryId)
+      if (prevUrl) URL.revokeObjectURL(prevUrl)
       const url = URL.createObjectURL(blob)
-      prevResultUrl.current = url
-      setResult({ blob, url, width, height })
-      setShowResult(true)
-      setProgress(100)
+      prevResultUrls.current.set(entryId, url)
+      updateEntry(entryId, { result: { blob, url, width, height }, showResult: true, progress: 100, processing: false })
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Processing failed')
-    } finally {
-      setProcessing(false)
+      updateEntry(entryId, { error: e instanceof Error ? e.message : 'Processing failed', processing: false })
     }
   }
 
-  function handleReset() {
-    setFile(null)
-    setFileUrl(null)
-    setDims(null)
-    setResult(null)
-    setError(null)
-    setCropMode(false)
-    setCropRect(null)
-    setCropRotation(0)
-    setRotation(0)
-    setTargetAspect(null)
-    setCustomW('')
-    setCustomH('')
-    setProgress(0)
-    setShowResult(false)
-    imgElRef.current = null
+  async function handleProcessAll() {
+    for (const entry of entries) {
+      if (!entry.processing) await handleProcess(entry.id)
+    }
   }
 
-  function handleDownload() {
-    if (!result || !file) return
+  // ── Background removal ────────────────────────────────────────────────────
+  async function handleBgRemove() {
+    if (!activeEntry) return
+    const entryId = activeEntry.id
+    const sourceFile = activeEntry.file
+    const sourceFileUrl = activeEntry.fileUrl
+    const sourceBgFill = activeEntry.bgFillColor
+    const sourceDims = activeEntry.dims
+    const sourceImgEl = activeEntry.imgEl
+    const sourceResult = activeEntry.result
+    const sourceShowResult = activeEntry.showResult
+    const prevUndo = activeEntry.bgUndo
+    updateEntry(entryId, { bgRemoving: true, bgRemoveProgress: 'Initialising model…', error: null })
+    try {
+      const blob = await removeBackground(sourceFile, {
+        progress: (key: string, current: number, total: number) => {
+          const pct = total > 0 ? Math.round((current / total) * 100) : 0
+          const label = key.includes('fetch') || key.includes('load')
+            ? `Downloading model… ${pct}%`
+            : `Processing… ${pct}%`
+          updateEntry(entryId, { bgRemoveProgress: label })
+        },
+      })
+
+      const fillColor = sourceBgFill
+
+      let resultBlob = blob
+      if (fillColor !== 'transparent') {
+        // Composite the bg-removed PNG over a solid fill color
+        const blobUrl = URL.createObjectURL(blob)
+        resultBlob = await new Promise<Blob>((resolve) => {
+          const img = new Image()
+          img.onload = () => {
+            const canvas = document.createElement('canvas')
+            canvas.width = img.naturalWidth
+            canvas.height = img.naturalHeight
+            const ctx = canvas.getContext('2d')
+            if (!ctx) {
+              URL.revokeObjectURL(blobUrl)
+              resolve(blob)
+              return
+            }
+            ctx.fillStyle = fillColor
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+            ctx.drawImage(img, 0, 0)
+            canvas.toBlob((b) => {
+              resolve(b ?? blob)
+            }, 'image/png')
+            URL.revokeObjectURL(blobUrl)
+          }
+          img.src = blobUrl
+        })
+      }
+
+      const prevUrl = prevResultUrls.current.get(entryId)
+      if (prevUrl) URL.revokeObjectURL(prevUrl)
+      const resultUrl = URL.createObjectURL(resultBlob)
+      prevResultUrls.current.set(entryId, resultUrl)
+
+      const resultImg = new Image()
+      await new Promise<void>((r) => { resultImg.onload = () => r(); resultImg.src = resultUrl })
+
+      const nextName = `${sourceFile.name.replace(/\.[^.]+$/, '')}-bg-removed.png`
+      const nextFile = new File([resultBlob], nextName, { type: 'image/png' })
+
+      if (prevUndo?.fileUrl && prevUndo.fileUrl !== sourceFileUrl) {
+        URL.revokeObjectURL(prevUndo.fileUrl)
+      }
+
+      updateEntry(entryId, {
+        file: nextFile,
+        fileUrl: resultUrl,
+        dims: { width: resultImg.naturalWidth, height: resultImg.naturalHeight },
+        imgEl: resultImg,
+        cropMode: false,
+        result: { blob: resultBlob, url: resultUrl, width: resultImg.naturalWidth, height: resultImg.naturalHeight },
+        showResult: false,
+        bgRemoving: false,
+        bgRemoveProgress: '',
+        bgUndo: {
+          file: sourceFile,
+          fileUrl: sourceFileUrl,
+          dims: sourceDims,
+          imgEl: sourceImgEl,
+          result: sourceResult,
+          showResult: sourceShowResult,
+        },
+      })
+    } catch (e) {
+      updateEntry(entryId, {
+        error: e instanceof Error ? e.message : 'Background removal failed',
+        bgRemoving: false,
+        bgRemoveProgress: '',
+      })
+    }
+  }
+
+  function handleUndoBgRemove() {
+    if (!activeEntry?.bgUndo) return
+    const entryId = activeEntry.id
+    const { bgUndo } = activeEntry
+
+    if (activeEntry.fileUrl !== bgUndo.fileUrl) {
+      URL.revokeObjectURL(activeEntry.fileUrl)
+    }
+
+    const trackedResultUrl = prevResultUrls.current.get(entryId)
+    if (trackedResultUrl && trackedResultUrl !== bgUndo.result?.url) {
+      URL.revokeObjectURL(trackedResultUrl)
+      prevResultUrls.current.delete(entryId)
+    }
+    if (bgUndo.result?.url) {
+      prevResultUrls.current.set(entryId, bgUndo.result.url)
+    }
+
+    updateEntry(entryId, {
+      file: bgUndo.file,
+      fileUrl: bgUndo.fileUrl,
+      dims: bgUndo.dims,
+      imgEl: bgUndo.imgEl,
+      result: bgUndo.result,
+      showResult: bgUndo.showResult,
+      cropMode: false,
+      bgRemoving: false,
+      bgRemoveProgress: '',
+      bgUndo: null,
+    })
+  }
+
+  function handleReset() {
+    for (const e of entries) {
+      URL.revokeObjectURL(e.fileUrl)
+      if (e.result?.url) URL.revokeObjectURL(e.result.url)
+      if (e.bgUndo?.fileUrl) URL.revokeObjectURL(e.bgUndo.fileUrl)
+    }
+    prevResultUrls.current.clear()
+    setEntries([]); setActiveId(null)
+  }
+
+  function handleDownload(entry: ImageFileEntry) {
+    if (!entry.result) return
     const ext = IMAGE_FORMATS.find((f) => f.value === format)?.ext ?? 'jpg'
     const a = document.createElement('a')
-    a.href = result.url
-    a.download = `${file.name.replace(/\.[^.]+$/, '')}-mz.${ext}`
+    a.href = entry.result.url
+    a.download = `${entry.file.name.replace(/\.[^.]+$/, '')}-mz.${ext}`
     a.click()
   }
 
-  // ─── Derived values ─────────────────────────────────────────────────────────
+  // ── Active entry shortcuts ────────────────────────────────────────────────
+  const file         = activeEntry?.file ?? null
+  const fileUrl      = activeEntry?.fileUrl ?? null
+  const dims         = activeEntry?.dims ?? null
+  const rotation     = activeEntry?.rotation ?? 0
+  const cropMode     = activeEntry?.cropMode ?? false
+  const cropRect     = activeEntry?.cropRect ?? null
+  const cropAspect   = activeEntry?.cropAspect ?? null
+  const cropRotation = activeEntry?.cropRotation ?? 0
+  const customW      = activeEntry?.customW ?? ''
+  const customH      = activeEntry?.customH ?? ''
+  const maintainAR   = activeEntry?.maintainAR ?? true
+  const targetAspect = activeEntry?.targetAspect ?? null
+  const result       = activeEntry?.result ?? null
+  const error             = activeEntry?.error ?? null
+  const showResult        = activeEntry?.showResult ?? false
+  const processing        = activeEntry?.processing ?? false
+  const progress          = activeEntry?.progress ?? 0
+  const bgRemoving        = activeEntry?.bgRemoving ?? false
+  const bgRemoveProgress  = activeEntry?.bgRemoveProgress ?? ''
+  const bgFillColor       = activeEntry?.bgFillColor ?? 'transparent'
+  const hasBgUndo         = Boolean(activeEntry?.bgUndo)
 
   const estimatedSize = file ? estimateOutputSize(file.size, format, quality) : 0
-  const reduction = file && estimatedSize
-    ? Math.round((1 - estimatedSize / file.size) * 100)
-    : 0
+  const reduction     = file && estimatedSize ? Math.round((1 - estimatedSize / file.size) * 100) : 0
 
-  // Computed output preview dimensions (live estimate)
   const liveOutDims = (() => {
     if (!dims) return null
-    let w = dims.width
-    let h = dims.height
+    let w = dims.width; let h = dims.height
     if (cropRect && cropRect.width > 0) { w = cropRect.width; h = cropRect.height }
     else if (targetAspect) {
       if (targetAspect > w / h) h = Math.round(w / targetAspect)
@@ -570,8 +738,9 @@ function ImageStudio() {
     return { width: w, height: h }
   })()
 
-  // ─── Render ─────────────────────────────────────────────────────────────────
+  const anyProcessing = entries.some((e) => e.processing)
 
+  // ── Render ──────────────────────────────────────────────────────────────
   return (
     <div className="mz-app flex flex-col min-h-screen">
       {/* Top bar */}
@@ -589,28 +758,33 @@ function ImageStudio() {
           <span className="text-xs">Media</span>
         </a>
         <span className="text-xs" style={{ color: 'var(--mz-border-2)' }}>/</span>
-        <span className="text-xs font-semibold" style={{ color: 'var(--mz-text)' }}>Image Studio</span>
+        <span className="text-xs font-semibold whitespace-nowrap" style={{ color: 'var(--mz-text)' }}>Image Studio</span>
         {file && (
           <>
             <span className="text-xs" style={{ color: 'var(--mz-border-2)' }}>·</span>
             <span className="mz-mono truncate max-w-40" style={{ color: 'var(--mz-text-2)', fontSize: '11px' }}>{file.name}</span>
-            {dims && <span className="mz-badge">{dims.width}×{dims.height}</span>}
+            {dims && <span className="mz-badge whitespace-nowrap">{dims.width}×{dims.height}</span>}
             {dims && liveOutDims && (liveOutDims.width !== dims.width || liveOutDims.height !== dims.height) && (
-              <span className="mz-badge mz-badge-accent">→ {liveOutDims.width}×{liveOutDims.height}</span>
+              <span className="mz-badge mz-badge-accent whitespace-nowrap">→ {liveOutDims.width}×{liveOutDims.height}</span>
             )}
           </>
+        )}
+        {entries.length > 1 && (
+          <span className="mz-badge whitespace-nowrap" style={{ background: 'var(--mz-accent)', color: 'white' }}>
+            {entries.length} files
+          </span>
         )}
         <div className="flex-1" />
         {file && (
           <div className="flex items-center gap-1.5">
             {/* Quick rotate */}
-            <IconBtn onClick={() => setRotation((r) => (r + 270) % 360)} title="Rotate CCW 90°">
+            <IconBtn onClick={() => updateActive({ rotation: (rotation + 270) % 360 })} title="Rotate CCW 90°">
               <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="23 4 23 10 17 10"/>
                 <path d="M20.49 15a9 9 0 1 1-.49-3.87"/>
               </svg>
             </IconBtn>
-            <IconBtn onClick={() => setRotation((r) => (r + 90) % 360)} title="Rotate CW 90°">
+            <IconBtn onClick={() => updateActive({ rotation: (rotation + 90) % 360 })} title="Rotate CW 90°">
               <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="1 4 1 10 7 10"/>
                 <path d="M3.51 15a9 9 0 1 0 .49-3.87"/>
@@ -631,25 +805,26 @@ function ImageStudio() {
             </IconBtn>
           </div>
         )}
-        <span className="mz-badge">Canvas · Web Worker</span>
+        <span className="mz-badge whitespace-nowrap">Canvas · Web Worker</span>
       </div>
 
-      {!file ? (
+      {entries.length === 0 ? (
         /* ── Drop zone ── */
         <div className="flex flex-1 items-center justify-center px-6 py-12">
           <div className="w-full max-w-sm">
             <p className="mz-label mb-3">Image Studio</p>
             <h1 className="mb-2 text-[30px] font-light tracking-tight leading-none" style={{ color: 'var(--mz-text)' }}>
-              Drop an image
+              Drop images
             </h1>
             <p className="mb-8 text-sm" style={{ color: 'var(--mz-text-2)' }}>
-              Convert, compress, crop and rotate — entirely in your browser.
+              Convert, compress, crop and rotate — entirely in your browser. Drop multiple files to batch process.
             </p>
             <DropZone
               accept={['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp']}
-              onFile={handleFile}
-              label="Drop an image here"
-              sublabel="JPEG, PNG, WebP, AVIF, GIF, BMP"
+              onFiles={handleFiles}
+              multiple
+              label="Drop images here"
+              sublabel="JPEG, PNG, WebP, AVIF, GIF, BMP · multiple files ok"
             />
           </div>
         </div>
@@ -663,21 +838,19 @@ function ImageStudio() {
             {/* Main preview */}
             <div className="mz-well overflow-hidden">
               {cropMode && dims && fileUrl ? (
-                /* Crop canvas — centre it; portrait images self-constrain via min() width */
                 <div className="flex justify-center">
                   <CropCanvas
                     src={fileUrl}
                     imageWidth={dims.width}
                     imageHeight={dims.height}
                     cropRect={cropRect ?? { x: 0, y: 0, width: dims.width, height: dims.height }}
-                    onCropChange={setCropRect}
+                    onCropChange={(r) => updateActive({ cropRect: r })}
                     aspectRatio={cropAspect}
                     rotation={cropRotation}
                     maxHeight="60vh"
                   />
                 </div>
               ) : showResult && result ? (
-                /* Export result */
                 <img
                   src={result.url}
                   alt="Result"
@@ -685,7 +858,6 @@ function ImageStudio() {
                   style={{ maxWidth: '100%', maxHeight: '60vh', height: 'auto', width: 'auto' }}
                 />
               ) : (
-                /* Live preview canvas */
                 <canvas
                   ref={liveCanvasRef}
                   className="block mx-auto rounded-sm"
@@ -700,7 +872,7 @@ function ImageStudio() {
                   {' × '}
                   <span style={{ color: 'var(--mz-text)' }}>{dims?.height}</span>
                   {' px · '}
-                  {formatBytes(file.size)}
+                  {file && formatBytes(file.size)}
                 </span>
                 {liveOutDims && !showResult && (
                   <span className="mz-mono" style={{ color: 'var(--mz-accent)', fontSize: '11px' }}>
@@ -712,7 +884,7 @@ function ImageStudio() {
                     <span className="mz-mono" style={{ color: 'var(--mz-accent)', fontSize: '11px' }}>
                       {result.width} × {result.height} px · {formatBytes(result.blob.size)}
                     </span>
-                    {result.blob.size < file.size && (
+                    {file && result.blob.size < file.size && (
                       <span className="mz-badge mz-badge-accent">
                         -{Math.round((1 - result.blob.size / file.size) * 100)}%
                       </span>
@@ -735,7 +907,7 @@ function ImageStudio() {
                     <button
                       key={ar.label}
                       type="button"
-                      onClick={() => setCropAspect(ar.value ?? null)}
+                      onClick={() => updateActive({ cropAspect: ar.value ?? null })}
                       className={`mz-chip ${cropAspect === (ar.value ?? null) ? 'is-active' : ''}`}
                     >
                       {ar.label}
@@ -769,10 +941,10 @@ function ImageStudio() {
                 {/* Rotation dial row */}
                 <div className="flex items-center gap-3">
                   <span className="mz-label" style={{ color: 'var(--mz-accent)', flexShrink: 0 }}>Straighten</span>
-                  <RotationDial value={cropRotation} onChange={setCropRotation} />
+                  <RotationDial value={cropRotation} onChange={(v) => updateActive({ cropRotation: v })} />
                   <button
                     type="button"
-                    onClick={() => setCropRotation(0)}
+                    onClick={() => updateActive({ cropRotation: 0 })}
                     className="mz-btn mz-btn-ghost"
                     style={{ padding: '2px 8px', fontSize: '10px', flexShrink: 0, opacity: cropRotation === 0 ? 0.35 : 1 }}
                     disabled={cropRotation === 0}
@@ -788,14 +960,14 @@ function ImageStudio() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowResult(false)}
+                  onClick={() => updateActive({ showResult: false })}
                   className={`mz-chip ${!showResult ? 'is-active' : ''}`}
                 >
                   Live preview
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowResult(true)}
+                  onClick={() => updateActive({ showResult: true })}
                   className={`mz-chip ${showResult ? 'is-active' : ''}`}
                 >
                   Exported result
@@ -809,6 +981,94 @@ function ImageStudio() {
             className="flex w-72 shrink-0 flex-col overflow-y-auto border-l px-4 pt-4 pb-3 xl:w-80"
             style={{ borderColor: 'var(--mz-border)', background: 'var(--mz-surface)' }}
           >
+            {/* ── File queue ── */}
+            <Section
+              title={entries.length > 1 ? `Queue · ${entries.length} files` : 'File'}
+              badge={
+                entries.filter((e) => e.result !== null).length > 0
+                  ? `${entries.filter((e) => e.result !== null).length}/${entries.length} done`
+                  : undefined
+              }
+            >
+              <div className="flex flex-col gap-1 mb-2">
+                {entries.map((entry) => {
+                  const isActive = entry.id === activeId
+                  return (
+                    <div
+                      key={entry.id}
+                      className="flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer"
+                      style={{
+                        background: isActive ? 'var(--mz-surface-2)' : 'transparent',
+                        border: `1px solid ${isActive ? 'var(--mz-border-2)' : 'transparent'}`,
+                        transition: 'background 0.1s',
+                      }}
+                      onClick={() => setActiveId(entry.id)}
+                      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'var(--mz-surface-2)' }}
+                      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
+                    >
+                      {/* Thumbnail */}
+                      <div className="shrink-0 rounded overflow-hidden"
+                        style={{ width: 28, height: 28, background: 'var(--mz-surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {entry.result?.url
+                          ? <img src={entry.result.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          : <img src={entry.fileUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        }
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="mz-mono truncate" style={{ fontSize: '10px', color: isActive ? 'var(--mz-text)' : 'var(--mz-text-2)' }}>
+                          {entry.file.name}
+                        </p>
+                        <p style={{ fontSize: '9px', color: 'var(--mz-text-2)' }}>{formatBytes(entry.file.size)}</p>
+                      </div>
+                      {entry.processing ? (
+                        <svg aria-hidden="true" className="animate-spin shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--mz-accent)" strokeWidth="2">
+                          <circle cx="12" cy="12" r="10" strokeOpacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/>
+                        </svg>
+                      ) : entry.result ? (
+                        <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--mz-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleRemoveEntry(entry.id) }}
+                        className="shrink-0"
+                        style={{ color: 'var(--mz-text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: '1px 3px', fontSize: '14px', lineHeight: 1, opacity: 0.5 }}
+                        title="Remove"
+                        onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--mz-error)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = 'var(--mz-text-2)' }}
+                      >×</button>
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Add more files */}
+              <button
+                type="button"
+                className="mz-btn mz-btn-ghost w-full gap-2"
+                style={{ fontSize: '11px', justifyContent: 'center' }}
+                onClick={() => addMoreRef.current?.click()}
+              >
+                <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                Add more files
+              </button>
+              <input
+                ref={addMoreRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/avif,image/gif,image/bmp"
+                multiple
+                className="sr-only"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? [])
+                  if (files.length) handleAddMore(files)
+                  e.target.value = ''
+                }}
+                tabIndex={-1}
+              />
+            </Section>
+
             {/* FORMAT */}
             <Section title="Format">
               <div className="grid grid-cols-4 gap-1">
@@ -861,7 +1121,7 @@ function ImageStudio() {
                   <button
                     key={deg}
                     type="button"
-                    onClick={() => setRotation(deg)}
+                    onClick={() => updateActive({ rotation: deg })}
                     className={`mz-chip flex-1 justify-center ${rotation === deg ? 'is-active' : ''}`}
                     style={{ fontSize: '11px' }}
                   >
@@ -897,7 +1157,7 @@ function ImageStudio() {
                   {cropRect && cropRect.width > 0 && (
                     <button
                       type="button"
-                      onClick={() => { setCropRect(null); setCropAspect(null) }}
+                      onClick={() => updateActive({ cropRect: null, cropAspect: null })}
                       className="mz-btn mz-btn-danger"
                       style={{ padding: '5px 10px', fontSize: '11px' }}
                     >
@@ -912,7 +1172,7 @@ function ImageStudio() {
                       <button
                         key={ar.label}
                         type="button"
-                        onClick={() => setCropAspect(ar.value ?? null)}
+                        onClick={() => updateActive({ cropAspect: ar.value ?? null })}
                         className={`mz-chip justify-center ${cropAspect === (ar.value ?? null) ? 'is-active' : ''}`}
                         style={{ fontSize: '10px', padding: '4px 4px' }}
                       >
@@ -964,14 +1224,14 @@ function ImageStudio() {
             {/* ASPECT RATIO */}
             <Section
               title="Aspect Ratio"
-              badge={targetAspect ? ASPECT_RATIOS.find(a => a.value === targetAspect)?.label : undefined}
+              badge={targetAspect ? ASPECT_RATIOS.find((a) => a.value === targetAspect)?.label : undefined}
             >
               <div className="flex flex-wrap gap-1">
                 {ASPECT_RATIOS.map((ar) => (
                   <button
                     key={ar.label}
                     type="button"
-                    onClick={() => setTargetAspect(ar.value ?? null)}
+                    onClick={() => updateActive({ targetAspect: ar.value ?? null })}
                     className={`mz-chip ${targetAspect === (ar.value ?? null) ? 'is-active' : ''}`}
                     style={{ fontSize: '11px' }}
                   >
@@ -1003,20 +1263,122 @@ function ImageStudio() {
                 {(customW || customH) && (
                   <button
                     type="button"
-                    onClick={() => { setCustomW(''); setCustomH('') }}
+                    onClick={() => updateActive({ customW: '', customH: '' })}
                     className="mz-btn mz-btn-ghost"
                     style={{ padding: '4px 8px', flexShrink: 0 }}
                   >
-                  <svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                     </svg>
                   </button>
                 )}
               </div>
               <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs" style={{ color: 'var(--mz-text-2)' }}>
-                <input type="checkbox" checked={maintainAR} onChange={(e) => setMaintainAR(e.target.checked)} />
+                <input type="checkbox" checked={maintainAR} onChange={(e) => updateActive({ maintainAR: e.target.checked })} />
                 Lock aspect ratio
               </label>
+            </Section>
+
+            {/* ── BACKGROUND REMOVAL ── */}
+            <Section title="Background Removal" badge="AI" accent>
+              <p className="mb-3 text-xs leading-relaxed" style={{ color: 'var(--mz-text-2)' }}>
+                Removes image background using an on-device AI model (~30 MB, cached after first use). The removed result becomes your new editable source.
+              </p>
+
+              {/* Fill color option */}
+              <div className="mb-3">
+                <div className="mz-label mb-2">Background fill after removal</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => updateActive({ bgFillColor: 'transparent' })}
+                    className={`mz-chip flex-1 justify-center ${
+                      bgFillColor === 'transparent' ? 'is-active' : ''
+                    }`}
+                    style={{ fontSize: '11px' }}
+                  >
+                    Transparent
+                  </button>
+                  <div className="flex flex-1 items-center gap-1.5">
+                    <input
+                      type="color"
+                      value={bgFillColor === 'transparent' ? '#ffffff' : bgFillColor}
+                      onChange={(e) => updateActive({ bgFillColor: e.target.value })}
+                      className="h-7 w-8 rounded cursor-pointer border-0 bg-transparent p-0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateActive({
+                          bgFillColor:
+                            bgFillColor === 'transparent' ? '#ffffff' : bgFillColor,
+                        })
+                      }
+                      className={`mz-chip flex-1 justify-center ${
+                        bgFillColor !== 'transparent' ? 'is-active' : ''
+                      }`}
+                      style={{ fontSize: '11px' }}
+                    >
+                      {bgFillColor !== 'transparent' ? bgFillColor : 'Color'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {bgRemoving ? (
+                <div
+                  className="rounded-md px-3 py-3 space-y-2"
+                  style={{ background: 'var(--mz-accent-dim)', border: '1px solid var(--mz-accent-border)' }}
+                >
+                  <div className="flex items-center gap-2">
+                    <svg aria-hidden="true" className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--mz-accent)" strokeWidth="2">
+                      <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                      <path d="M12 2a10 10 0 0 1 10 10" />
+                    </svg>
+                    <span className="text-xs" style={{ color: 'var(--mz-accent)' }}>
+                      {bgRemoveProgress || 'Working…'}
+                    </span>
+                  </div>
+                  <div className="mz-progress">
+                    <div
+                      className="mz-progress-bar"
+                      style={{ width: bgRemoveProgress.includes('%') ? `${bgRemoveProgress.match(/(\d+)%/)?.[1] ?? 50}%` : '40%', animation: bgRemoveProgress.includes('%') ? 'none' : 'mz-indeterminate 1.4s infinite' }}
+                    />
+                  </div>
+                  <p className="text-xs" style={{ color: 'var(--mz-text-2)' }}>First run downloads the AI model once; subsequent runs are instant.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={handleBgRemove}
+                    disabled={!activeEntry || bgRemoving}
+                    className="mz-btn mz-btn-ghost w-full gap-2"
+                    style={{ fontSize: '12px' }}
+                  >
+                    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6l4.5 4.5M21 6l-4.5 4.5M3 18l4.5-4.5M21 18l-4.5-4.5" />
+                      <rect x="9" y="9" width="6" height="6" rx="1" />
+                    </svg>
+                    Remove Background
+                  </button>
+                  {result && (
+                    <p className="text-xs" style={{ color: 'var(--mz-text-2)' }}>
+                      Continue cropping, rotating, resizing, and exporting from the removed-background image.
+                    </p>
+                  )}
+                  {hasBgUndo && (
+                    <button
+                      type="button"
+                      onClick={handleUndoBgRemove}
+                      className="mz-btn mz-btn-danger w-full"
+                      style={{ fontSize: '11px' }}
+                    >
+                      Undo remove background
+                    </button>
+                  )}
+                </div>
+              )}
             </Section>
 
             <div className="flex-1" />
@@ -1036,8 +1398,8 @@ function ImageStudio() {
               <div className="flex gap-1.5">
                 <button
                   type="button"
-                  onClick={handleProcess}
-                  disabled={processing}
+                  onClick={() => activeEntry && handleProcess(activeEntry.id)}
+                  disabled={processing || !activeEntry}
                   className="mz-btn mz-btn-primary flex-1 gap-1.5"
                 >
                   {processing ? (
@@ -1050,10 +1412,10 @@ function ImageStudio() {
                     </>
                   ) : result ? 'Re-export' : 'Export'}
                 </button>
-                {result && (
+                {result && activeEntry && (
                   <button
                     type="button"
-                    onClick={handleDownload}
+                    onClick={() => handleDownload(activeEntry)}
                     className="mz-btn mz-btn-ghost"
                     style={{ padding: '7px 12px' }}
                     title="Download"
@@ -1066,6 +1428,33 @@ function ImageStudio() {
                   </button>
                 )}
               </div>
+
+              {/* Export all */}
+              {entries.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handleProcessAll}
+                  disabled={anyProcessing}
+                  className="mz-btn mz-btn-ghost gap-1.5"
+                  style={{ fontSize: '11px' }}
+                >
+                  {anyProcessing ? (
+                    <>
+                      <svg aria-hidden="true" className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10" strokeOpacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/>
+                      </svg>
+                      Processing all...
+                    </>
+                  ) : (
+                    <>
+                      <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                      </svg>
+                      Export all {entries.length} images
+                    </>
+                  )}
+                </button>
+              )}
 
               {processing && (
                 <div className="mz-progress">
@@ -1081,7 +1470,7 @@ function ImageStudio() {
                 onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--mz-text)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--mz-text-2)' }}
               >
-                Open different file
+                Clear all files
               </button>
             </div>
           </div>
