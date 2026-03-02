@@ -1,16 +1,21 @@
 /**
  * FFmpeg WASM service
- * - Core/WASM blobs are loaded from local node_modules (no CDN)
+ * - Core/WASM blobs are loaded from jsDelivr CDN (not bundled)
+ * - Browser HTTP cache handles cross-session caching of the CDN assets
+ * - blobCache handles within-session deduplication (one fetch per page load)
  * - Each processVideo() call gets its own fresh FFmpeg instance
  *   so multiple formats can be converted in parallel
  * - AV1 (VP9) uses a two-step encode to strip alpha from the source
  *   before passing to libvpx-vp9, avoiding WASM heap crashes
  */
 
-import coreWasmUrl from '@ffmpeg/core/wasm?url'
-import coreJsUrl from '@ffmpeg/core?url'
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile, toBlobURL } from '@ffmpeg/util'
+
+const FFMPEG_CORE_VERSION = '0.12.10'
+const CDN_BASE = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FFMPEG_CORE_VERSION}/dist/esm`
+const CORE_JS_URL   = `${CDN_BASE}/ffmpeg-core.js`
+const CORE_WASM_URL = `${CDN_BASE}/ffmpeg-core.wasm`
 
 export type VideoFormat = 'mp4' | 'webm' | 'avi' | 'mov' | 'mkv' | 'gif' | 'hevc' | 'av1'
 
@@ -41,8 +46,8 @@ let blobCache: Promise<{ coreURL: string; wasmURL: string }> | null = null
 function getBlobURLs() {
   if (!blobCache) {
     blobCache = Promise.all([
-      toBlobURL(coreJsUrl,   'text/javascript'),
-      toBlobURL(coreWasmUrl, 'application/wasm'),
+      toBlobURL(CORE_JS_URL,   'text/javascript'),
+      toBlobURL(CORE_WASM_URL, 'application/wasm'),
     ]).then(([coreURL, wasmURL]) => ({ coreURL, wasmURL }))
   }
   return blobCache
