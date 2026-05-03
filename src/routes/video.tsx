@@ -1,5 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CmdKTrigger } from '#/components/CommandPalette'
+import PresetsPanel from '#/components/PresetsPanel'
 
 // ─── Grip icon (3 vertical lines) ────────────────────────────────────────────
 function GripLines() {
@@ -19,8 +21,18 @@ import {
   processVideo,
   type VideoFormat,
 } from '#/lib/ffmpeg-service'
+import {
+  addHistory,
+  deleteVideoPreset,
+  LOAD_VIDEO_PRESET_EVENT,
+  renameVideoPreset,
+  saveVideoPreset,
+  useHistory,
+  useVideoPresets,
+  type VideoPreset,
+} from '#/lib/store'
 
-export const Route = createFileRoute('/media/video')({ component: VideoStudio })
+export const Route = createFileRoute('/video')({ component: VideoStudio })
 
 type VideoResult = {
   blob: Blob
@@ -418,6 +430,25 @@ function VideoStudio() {
   const [scale, setScale]               = useState<string | null>(null)
   const [preset, setPreset]             = useState('medium')
 
+  // ── Presets & History ────────────────────────────────────────────────────
+  const videoPresets = useVideoPresets()
+  const history = useHistory()
+  const videoHistory = history.filter((h) => h.kind === 'video').slice(0, 6)
+
+  useEffect(() => {
+    function onLoadPreset(e: Event) {
+      const p = (e as CustomEvent<VideoPreset>).detail
+      setSelectedFormats(p.formats as VideoFormat[])
+      setCrf(p.crf)
+      setPreset(p.encodingPreset)
+      setScale(p.scale ?? null)
+      setRemoveAudio(p.removeAudio)
+      setAudioBitrate(p.audioBitrate)
+    }
+    window.addEventListener(LOAD_VIDEO_PRESET_EVENT, onLoadPreset)
+    return () => window.removeEventListener(LOAD_VIDEO_PRESET_EVENT, onLoadPreset)
+  }, [])
+
   // ── FFmpeg ───────────────────────────────────────────────────────────────
   const [ffmpegLoaded, setFfmpegLoaded]   = useState(false)
   const [ffmpegLoading, setFfmpegLoading] = useState(false)
@@ -493,6 +524,7 @@ function VideoStudio() {
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // biome-ignore lint/correctness/useExhaustiveDependencies: makeEntry uses only stable setEntries updater
   const handleFiles = useCallback((files: File[]) => {
     const newEntries = files.map((f) => makeEntry(f))
     setEntries((prev) => {
@@ -502,6 +534,7 @@ function VideoStudio() {
   }, [])
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // biome-ignore lint/correctness/useExhaustiveDependencies: makeEntry uses only stable setEntries updater
   const handleAddMore = useCallback((files: File[]) => {
     const newEntries = files.map((f) => makeEntry(f))
     setEntries((prev) => [...prev, ...newEntries])
@@ -548,7 +581,7 @@ function VideoStudio() {
 
     await Promise.allSettled(
       selectedFormats.map(async (fmt) => {
-        const fmtDef = VIDEO_FORMATS.find((f) => f.value === fmt)!
+        const fmtDef = VIDEO_FORMATS.find((f) => f.value === fmt) ?? VIDEO_FORMATS[0]
         try {
           const blob = await processVideo(
             snap.file,
@@ -580,6 +613,15 @@ function VideoStudio() {
       }),
     )
     setEntries((prev) => prev.map((e) => e.id === entryId ? { ...e, processing: false } : e))
+    const successResults = entryResultsRef.current.get(entryId) ?? []
+    if (successResults.length > 0) {
+      const fmtList = successResults.map((r) => r.format.toUpperCase()).join(', ')
+      addHistory({
+        kind: 'video',
+        label: snap.file.name,
+        detail: `${fmtList} · CRF ${crf} · ${preset}`,
+      })
+    }
   }
 
   async function handleProcessAll() {
@@ -605,7 +647,9 @@ function VideoStudio() {
   }
 
   function handleDownloadAllFormats(entry: VideoFileEntry) {
-    entry.results.forEach((r, i) => setTimeout(() => handleDownload(r, entry), i * 150))
+    for (const [i, r] of entry.results.entries()) {
+      setTimeout(() => handleDownload(r, entry), i * 150)
+    }
   }
 
   // ── Derived values for active entry display ──────────────────────────────
@@ -636,7 +680,7 @@ function VideoStudio() {
   return (
     <div className="mz-app flex flex-col min-h-screen">
       <div className="mz-topbar">
-        <a href="/media" className="flex items-center gap-1.5 no-underline"
+        <a href="/" className="flex items-center gap-1.5 no-underline"
           style={{ color: 'var(--mz-text-2)' }}
           onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--mz-text)' }}
           onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--mz-text-2)' }}
@@ -661,6 +705,7 @@ function VideoStudio() {
           </span>
         )}
         <div className="flex-1" />
+        <CmdKTrigger />
         <span className="mz-badge">FFmpeg · WASM</span>
       </div>
 
@@ -776,7 +821,7 @@ function VideoStudio() {
                   {/* Per-format mini progress bars */}
                   <div className="flex flex-col gap-2" style={{ width: 220 }}>
                     {selectedFormats.map((fmt) => {
-                      const fmtDef = VIDEO_FORMATS.find((f) => f.value === fmt)!
+                      const fmtDef = VIDEO_FORMATS.find((f) => f.value === fmt) ?? VIDEO_FORMATS[0]
                       const p      = formatProgress[fmt] ?? 0
                       const done   = p >= 100
                       const failed = p === -1
@@ -807,7 +852,7 @@ function VideoStudio() {
               )}
 
               <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="mz-mono truncate max-w-[200px]" style={{ color: 'var(--mz-text)', fontSize: '11px' }}>{file?.name}</span>
+                <span className="mz-mono truncate max-w-50" style={{ color: 'var(--mz-text)', fontSize: '11px' }}>{file?.name}</span>
                 {file && <span className="mz-mono" style={{ color: 'var(--mz-text-2)', fontSize: '11px' }}>{formatBytes(file.size)}</span>}
                 {results.length === 1 && file && (
                   <span className="ml-auto flex items-center gap-2">
@@ -861,7 +906,7 @@ function VideoStudio() {
                 </div>
                 <div className="flex flex-col gap-1.5">
                   {results.map((r) => {
-                    const fmtDef = VIDEO_FORMATS.find((f) => f.value === r.format)!
+                    const fmtDef = VIDEO_FORMATS.find((f) => f.value === r.format) ?? VIDEO_FORMATS[0]
                     const saved  = file && file.size > 0 ? Math.round((1 - r.blob.size / file.size) * 100) : 0
                     return (
                       <div key={r.format} className="flex items-center gap-3 rounded-md px-3 py-2"
@@ -1147,6 +1192,41 @@ function VideoStudio() {
                   {trimEnabled && videoDuration === 0 && (
                     <p style={{ fontSize: '10px', color: 'var(--mz-text-2)' }}>Waiting for video metadata…</p>
                   )}
+                </div>
+              </Section>
+            )}
+
+            {/* PRESETS */}
+            <Section title="Presets">
+              <PresetsPanel<VideoPreset>
+                presets={videoPresets}
+                renderSummary={(p) => `${p.formats.join(', ').toUpperCase()} · CRF ${p.crf} · ${p.encodingPreset}`}
+                onLoad={(p) => {
+                  setSelectedFormats(p.formats as VideoFormat[])
+                  setCrf(p.crf)
+                  setPreset(p.encodingPreset)
+                  setScale(p.scale ?? null)
+                  setRemoveAudio(p.removeAudio)
+                  setAudioBitrate(p.audioBitrate)
+                }}
+                onSave={(name) => saveVideoPreset({ name, formats: selectedFormats, crf, encodingPreset: preset, scale, removeAudio, audioBitrate })}
+                onRename={(id, name) => renameVideoPreset(id, name)}
+                onDelete={(id) => deleteVideoPreset(id)}
+                saveLabel="Save current settings"
+                canSave
+              />
+            </Section>
+
+            {/* HISTORY */}
+            {videoHistory.length > 0 && (
+              <Section title="History">
+                <div className="space-y-1">
+                  {videoHistory.map((h) => (
+                    <div key={h.id} className="mz-history-item">
+                      <span className="truncate text-xs" style={{ color: 'var(--mz-text)' }}>{h.label}</span>
+                      <span className="mz-label shrink-0">{h.detail}</span>
+                    </div>
+                  ))}
                 </div>
               </Section>
             )}

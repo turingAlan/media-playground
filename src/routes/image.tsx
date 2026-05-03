@@ -1,8 +1,10 @@
 import { removeBackground } from '@imgly/background-removal'
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CmdKTrigger } from '#/components/CommandPalette'
 import CropCanvas, { type CropRect } from '#/components/image/CropCanvas'
 import DropZone from '#/components/media/DropZone'
+import PresetsPanel from '#/components/PresetsPanel'
 import {
   ASPECT_RATIOS,
   estimateOutputSize,
@@ -12,8 +14,18 @@ import {
   type ImageOperation,
   processImage,
 } from '#/lib/image-processor'
+import {
+  addHistory,
+  deleteImagePreset,
+  type ImagePreset,
+  LOAD_IMAGE_PRESET_EVENT,
+  renameImagePreset,
+  saveImagePreset,
+  useHistory,
+  useImagePresets,
+} from '#/lib/store'
 
-export const Route = createFileRoute('/media/image')({ component: ImageStudio })
+export const Route = createFileRoute('/image')({ component: ImageStudio })
 
 type Dims = { width: number; height: number }
 
@@ -337,6 +349,21 @@ function ImageStudio() {
   const [format, setFormat] = useState<ImageFormat>('image/webp')
   const [quality, setQuality] = useState(0.85)
 
+  // ── Presets & History ────────────────────────────────────────────────────
+  const imagePresets = useImagePresets()
+  const history = useHistory()
+  const imageHistory = history.filter((h) => h.kind === 'image').slice(0, 6)
+
+  useEffect(() => {
+    function onLoadPreset(e: Event) {
+      const preset = (e as CustomEvent<ImagePreset>).detail
+      setFormat(preset.format as ImageFormat)
+      setQuality(preset.quality)
+    }
+    window.addEventListener(LOAD_IMAGE_PRESET_EVENT, onLoadPreset)
+    return () => window.removeEventListener(LOAD_IMAGE_PRESET_EVENT, onLoadPreset)
+  }, [])
+
   // ── Refs ─────────────────────────────────────────────────────────────────
   const liveCanvasRef  = useRef<HTMLCanvasElement>(null)
   const imgElRef       = useRef<HTMLImageElement | null>(null)
@@ -539,6 +566,11 @@ function ImageStudio() {
       const url = URL.createObjectURL(blob)
       prevResultUrls.current.set(entryId, url)
       updateEntry(entryId, { result: { blob, url, width, height }, showResult: true, progress: 100, processing: false })
+      addHistory({
+        kind: 'image',
+        label: entry.file.name,
+        detail: `${format.replace('image/', '').toUpperCase()} · Q${Math.round(quality * 100)} · ${width}×${height}`,
+      })
     } catch (e) {
       updateEntry(entryId, { error: e instanceof Error ? e.message : 'Processing failed', processing: false })
     }
@@ -746,7 +778,7 @@ function ImageStudio() {
       {/* Top bar */}
       <div className="mz-topbar">
         <a
-          href="/media"
+          href="/"
           className="flex items-center gap-1.5 no-underline"
           style={{ color: 'var(--mz-text-2)' }}
           onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--mz-text)' }}
@@ -805,6 +837,7 @@ function ImageStudio() {
             </IconBtn>
           </div>
         )}
+        <CmdKTrigger />
         <span className="mz-badge whitespace-nowrap">Canvas · Web Worker</span>
       </div>
 
@@ -1380,6 +1413,37 @@ function ImageStudio() {
                 </div>
               )}
             </Section>
+
+            {/* PRESETS */}
+            <Section title="Presets">
+              <PresetsPanel<ImagePreset>
+                presets={imagePresets}
+                renderSummary={(p) => `${p.format.replace('image/', '').toUpperCase()} · Q${Math.round(p.quality * 100)}`}
+                onLoad={(p) => {
+                  setFormat(p.format as ImageFormat)
+                  setQuality(p.quality)
+                }}
+                onSave={(name) => saveImagePreset(name, { format, quality })}
+                onRename={(id, name) => renameImagePreset(id, name)}
+                onDelete={(id) => deleteImagePreset(id)}
+                saveLabel="Save current settings"
+                canSave
+              />
+            </Section>
+
+            {/* HISTORY */}
+            {imageHistory.length > 0 && (
+              <Section title="History">
+                <div className="space-y-1">
+                  {imageHistory.map((h) => (
+                    <div key={h.id} className="mz-history-item">
+                      <span className="truncate text-xs" style={{ color: 'var(--mz-text)' }}>{h.label}</span>
+                      <span className="mz-label shrink-0">{h.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
 
             <div className="flex-1" />
 

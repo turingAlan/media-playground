@@ -11,7 +11,7 @@ function coopCoepPlugin() {
   return {
     name: 'coop-coep-headers',
     configureServer(server: { middlewares: { use: (fn: Connect.HandleFunction) => void } }) {
-      server.middlewares.use((_req: any, res: { setHeader: (arg0: string, arg1: string) => void }, next: () => void) => {
+      server.middlewares.use((_req: Connect.IncomingMessage, res: { setHeader: (arg0: string, arg1: string) => void }, next: () => void) => {
         res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
         res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
         next()

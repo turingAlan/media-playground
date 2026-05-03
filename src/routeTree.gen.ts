@@ -9,84 +9,89 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as VideoRouteImport } from './routes/video'
+import { Route as QrRouteImport } from './routes/qr'
+import { Route as ImageRouteImport } from './routes/image'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as MediaIndexRouteImport } from './routes/media.index'
-import { Route as MediaVideoRouteImport } from './routes/media.video'
-import { Route as MediaQrRouteImport } from './routes/media.qr'
-import { Route as MediaImageRouteImport } from './routes/media.image'
 
+const VideoRoute = VideoRouteImport.update({
+  id: '/video',
+  path: '/video',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QrRoute = QrRouteImport.update({
+  id: '/qr',
+  path: '/qr',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ImageRoute = ImageRouteImport.update({
+  id: '/image',
+  path: '/image',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const MediaIndexRoute = MediaIndexRouteImport.update({
-  id: '/media/',
-  path: '/media/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MediaVideoRoute = MediaVideoRouteImport.update({
-  id: '/media/video',
-  path: '/media/video',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MediaQrRoute = MediaQrRouteImport.update({
-  id: '/media/qr',
-  path: '/media/qr',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MediaImageRoute = MediaImageRouteImport.update({
-  id: '/media/image',
-  path: '/media/image',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/media/image': typeof MediaImageRoute
-  '/media/qr': typeof MediaQrRoute
-  '/media/video': typeof MediaVideoRoute
-  '/media/': typeof MediaIndexRoute
+  '/image': typeof ImageRoute
+  '/qr': typeof QrRoute
+  '/video': typeof VideoRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/media/image': typeof MediaImageRoute
-  '/media/qr': typeof MediaQrRoute
-  '/media/video': typeof MediaVideoRoute
-  '/media': typeof MediaIndexRoute
+  '/image': typeof ImageRoute
+  '/qr': typeof QrRoute
+  '/video': typeof VideoRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/media/image': typeof MediaImageRoute
-  '/media/qr': typeof MediaQrRoute
-  '/media/video': typeof MediaVideoRoute
-  '/media/': typeof MediaIndexRoute
+  '/image': typeof ImageRoute
+  '/qr': typeof QrRoute
+  '/video': typeof VideoRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/media/image' | '/media/qr' | '/media/video' | '/media/'
+  fullPaths: '/' | '/image' | '/qr' | '/video'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/media/image' | '/media/qr' | '/media/video' | '/media'
-  id:
-    | '__root__'
-    | '/'
-    | '/media/image'
-    | '/media/qr'
-    | '/media/video'
-    | '/media/'
+  to: '/' | '/image' | '/qr' | '/video'
+  id: '__root__' | '/' | '/image' | '/qr' | '/video'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  MediaImageRoute: typeof MediaImageRoute
-  MediaQrRoute: typeof MediaQrRoute
-  MediaVideoRoute: typeof MediaVideoRoute
-  MediaIndexRoute: typeof MediaIndexRoute
+  ImageRoute: typeof ImageRoute
+  QrRoute: typeof QrRoute
+  VideoRoute: typeof VideoRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/video': {
+      id: '/video'
+      path: '/video'
+      fullPath: '/video'
+      preLoaderRoute: typeof VideoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/qr': {
+      id: '/qr'
+      path: '/qr'
+      fullPath: '/qr'
+      preLoaderRoute: typeof QrRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/image': {
+      id: '/image'
+      path: '/image'
+      fullPath: '/image'
+      preLoaderRoute: typeof ImageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -94,53 +99,15 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/media/': {
-      id: '/media/'
-      path: '/media'
-      fullPath: '/media/'
-      preLoaderRoute: typeof MediaIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/media/video': {
-      id: '/media/video'
-      path: '/media/video'
-      fullPath: '/media/video'
-      preLoaderRoute: typeof MediaVideoRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/media/qr': {
-      id: '/media/qr'
-      path: '/media/qr'
-      fullPath: '/media/qr'
-      preLoaderRoute: typeof MediaQrRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/media/image': {
-      id: '/media/image'
-      path: '/media/image'
-      fullPath: '/media/image'
-      preLoaderRoute: typeof MediaImageRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  MediaImageRoute: MediaImageRoute,
-  MediaQrRoute: MediaQrRoute,
-  MediaVideoRoute: MediaVideoRoute,
-  MediaIndexRoute: MediaIndexRoute,
+  ImageRoute: ImageRoute,
+  QrRoute: QrRoute,
+  VideoRoute: VideoRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}
