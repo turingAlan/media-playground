@@ -1,4 +1,5 @@
-import { createRootRoute, HeadContent, Scripts } from '@tanstack/react-router'
+import { createRootRoute, HeadContent, Outlet, Scripts } from '@tanstack/react-router'
+import CommandPalette from '#/components/CommandPalette'
 
 import appCss from '../styles.css?url'
 
@@ -26,7 +27,18 @@ export const Route = createRootRoute({
     ],
   }),
   shellComponent: RootDocument,
+  component: RootLayout,
 })
+
+/** Inner layout — renders the active route + the global command palette */
+function RootLayout() {
+  return (
+    <>
+      <Outlet />
+      <CommandPalette />
+    </>
+  )
+}
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (

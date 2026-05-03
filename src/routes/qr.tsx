@@ -7,8 +7,20 @@ import type {
 } from 'qr-code-styling'
 import QRCodeStyling from 'qr-code-styling'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CmdKTrigger } from '#/components/CommandPalette'
+import PresetsPanel from '#/components/PresetsPanel'
+import {
+  addHistory,
+  deleteQRPreset,
+  LOAD_QR_PRESET_EVENT,
+  type QRPreset,
+  renameQRPreset,
+  saveQRPreset,
+  useHistory,
+  useQRPresets,
+} from '#/lib/store'
 
-export const Route = createFileRoute('/media/qr')({ component: QRStudio })
+export const Route = createFileRoute('/qr')({ component: QRStudio })
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -416,6 +428,20 @@ function QRStudio() {
   const [s, setS] = useState<QRSettings>(DEFAULT)
   const [downloading, setDownloading] = useState(false)
   const [templateCopied, setTemplateCopied] = useState(false)
+
+  // ── Presets & History ────────────────────────────────────────────────────
+  const qrPresets = useQRPresets()
+  const history = useHistory()
+  const qrHistory = history.filter((h) => h.kind === 'qr').slice(0, 6)
+
+  useEffect(() => {
+    function onLoadPreset(e: Event) {
+      const preset = (e as CustomEvent<QRPreset>).detail
+      setS((prev) => ({ ...prev, ...preset.settings }))
+    }
+    window.addEventListener(LOAD_QR_PRESET_EVENT, onLoadPreset)
+    return () => window.removeEventListener(LOAD_QR_PRESET_EVENT, onLoadPreset)
+  }, [])
   const previewRef = useRef<HTMLDivElement>(null)
   const qrRef = useRef<InstanceType<typeof QRCodeStyling> | null>(null)
   const logoInputRef = useRef<HTMLInputElement>(null)
@@ -589,6 +615,13 @@ function QRStudio() {
       }
     } finally {
       setDownloading(false)
+      if (s.data.trim()) {
+        addHistory({
+          kind: 'qr',
+          label: s.data.trim().slice(0, 40) + (s.data.trim().length > 40 ? '…' : ''),
+          detail: `${s.exportFormat.toUpperCase()} · ${s.exportSize}px · ${s.dotType}`,
+        })
+      }
     }
   }
 
@@ -598,7 +631,7 @@ function QRStudio() {
       {/* ── Top bar ── */}
       <div className="mz-topbar">
         <a
-          href="/media"
+          href="/"
           className="flex items-center gap-1.5 no-underline"
           style={{ color: 'var(--mz-text-2)' }}
           onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--mz-text)' }}
@@ -612,6 +645,7 @@ function QRStudio() {
         <span className="text-xs" style={{ color: 'var(--mz-border-2)' }}>/</span>
         <span className="text-xs font-semibold" style={{ color: 'var(--mz-text)' }}>QR Studio</span>
         <div className="flex-1" />
+        <CmdKTrigger />
         <span className="mz-badge mz-badge-accent">Fully local · no tracking</span>
       </div>
 
@@ -1006,6 +1040,34 @@ function QRStudio() {
               )}
             </div>
           </Section>
+
+          {/* PRESETS */}
+          <Section title="Presets">
+            <PresetsPanel<QRPreset>
+              presets={qrPresets}
+              renderSummary={(p) => `${p.settings.dotType} · ${p.settings.exportFormat.toUpperCase()} · ${p.settings.exportSize}px`}
+              onLoad={(p) => setS((prev) => ({ ...prev, ...p.settings }))}
+              onSave={(name) => saveQRPreset(name, { errorLevel: s.errorLevel, margin: s.margin, shape: s.shape, dotType: s.dotType, dotColor: s.dotColor, bgTransparent: s.bgTransparent, bgColor: s.bgColor, csType: s.csType, csColorInherit: s.csColorInherit, csColor: s.csColor, cdType: s.cdType, cdColorInherit: s.cdColorInherit, cdColor: s.cdColor, logoSize: s.logoSize, logoMargin: s.logoMargin, logoHideDots: s.logoHideDots, exportFormat: s.exportFormat, exportSize: s.exportSize })}
+              onRename={(id, name) => renameQRPreset(id, name)}
+              onDelete={(id) => deleteQRPreset(id)}
+              saveLabel="Save current style"
+              canSave
+            />
+          </Section>
+
+          {/* HISTORY */}
+          {qrHistory.length > 0 && (
+            <Section title="History">
+              <div className="space-y-1">
+                {qrHistory.map((h) => (
+                  <div key={h.id} className="mz-history-item">
+                    <span className="truncate text-xs" style={{ color: 'var(--mz-text)' }}>{h.label}</span>
+                    <span className="mz-label shrink-0">{h.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
 
           <div className="flex-1" />
 
