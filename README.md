@@ -1,41 +1,72 @@
-Welcome to your new TanStack Start app! 
+<h1 align="center">media playground</h1>
 
-# Getting Started
+<p align="center">
+  browser-based media toolkit — your files never leave your machine
+  <br/>
+  <a href="https://media.turingalan.com">media.turingalan.com</a>
+</p>
 
-To run this application:
+---
+
+## what is this?
+
+a privacy-first media toolkit that runs **entirely in your browser**. no uploads, no servers — everything is processed locally.
+
+---
+
+## studios
+
+### image studio
+
+- convert between JPEG, PNG, WebP, AVIF
+- crop, rotate, resize, compress
+- AI background removal (in-browser)
+- real-time output size estimation
+
+### video studio
+
+- convert between MP4, WebM, MOV, MKV, GIF
+- compression, bitrate control, audio removal
+- resolution scaling and timeline trimming
+
+### qr studio
+
+- custom dot shapes, eye styles, gradients
+- embed logos, transparent backgrounds
+- export as PNG, SVG, WebP, JPEG
+
+---
+
+## common features
+
+- save and load presets
+- activity history
+- cmd+k command palette
+- dark mode
+- 100% local processing, zero uploads
+
+---
+
+## getting started
 
 ```bash
 bun install
 bun --bun run dev
 ```
 
-# Building For Production
+### env
 
-To build this application for production:
-
-```bash
-bun --bun run build
+```env
+GOOGLE_NANO_API_KEY=your_key_here
 ```
 
-## Testing
-
-This project uses [Vitest](https://vitest.dev/) for testing. You can run the tests with:
+### deploy
 
 ```bash
-bun --bun run test
+bun run build && wrangler deploy
 ```
 
-## Styling
-
-This project uses [Tailwind CSS](https://tailwindcss.com/) for styling.
-
-### Removing Tailwind CSS
-
-If you prefer not to use Tailwind CSS:
-
-1. Remove the demo pages in `src/routes/demo/`
-2. Replace the Tailwind import in `src/styles.css` with your own styles
-3. Remove `tailwindcss()` from the plugins array in `vite.config.ts`
+hosted on [media.turingalan.com](https://media.turingalan.com)
 4. Uninstall the packages: `bun install @tailwindcss/vite tailwindcss -D`
 
 ## Linting & Formatting
